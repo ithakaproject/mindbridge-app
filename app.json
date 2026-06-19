@@ -8,9 +8,11 @@
     "scheme": "mindbridgeapp",
     "userInterfaceStyle": "automatic",
     "ios": {
+      "bundleIdentifier": "com.ithakaproject.mindbridge-app",
       "icon": "./assets/expo.icon"
     },
     "android": {
+      "package": "com.ithakaproject.mindbridge",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
