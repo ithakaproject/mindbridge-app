@@ -1,40 +1,46 @@
-/**
- * Below are the colors that are used in the app. The colors are defined in the light and dark mode.
- * There are many other ways to style your app. For example, [Nativewind](https://www.nativewind.dev/), [Tamagui](https://tamagui.dev/), [unistyles](https://reactnativeunistyles.vercel.app), etc.
- */
-
 import '@/global.css';
-
 import { Platform } from 'react-native';
 
+// MindBridge brand palette — fixed dark theme (from the HTML mockups).
+// `light` mirrors `dark` for now since no light mode has been designed.
+const brand = {
+  text: '#EDE4D4',
+  background: '#141F2E',
+  backgroundElement: '#1A2D42',
+  backgroundSelected: '#223350',
+  backgroundSurface: '#0E1923',
+  textSecondary: '#98B4C4',
+  textTertiary: '#5A7A8C',
+  border: 'rgba(255,255,255,0.07)',
+  gold: '#F0C074',
+  goldDim: '#C8943A',
+  teal: '#3DBFAD',
+  tealDim: '#258F80',
+  green: '#52C48A',
+  rose: '#E07272',
+  purple: '#A07ED4',
+  amber: '#E8A952',
+ textOnAccent: '#FFFFFF',
+tealSoft: 'rgba(61,191,173,0.12)',
+overlay: 'rgba(0,0,0,0.5)',
+tabInactive: '#6A8898',
+tabActiveGlow: 'rgba(240,192,116,0.16)',
+tealDeep: '#1D6B8F',
+focusCardGlow: 'rgba(255,255,255,0.06)',
+} as const;
+
 export const Colors = {
-  light: {
-    text: '#000000',
-    background: '#ffffff',
-    backgroundElement: '#F0F0F3',
-    backgroundSelected: '#E0E1E6',
-    textSecondary: '#60646C',
-  },
-  dark: {
-    text: '#ffffff',
-    background: '#000000',
-    backgroundElement: '#212225',
-    backgroundSelected: '#2E3135',
-    textSecondary: '#B0B4BA',
-  },
+  light: brand,
+  dark: brand,
 } as const;
 
 export type ThemeColor = keyof typeof Colors.light & keyof typeof Colors.dark;
 
 export const Fonts = Platform.select({
   ios: {
-    /** iOS `UIFontDescriptorSystemDesignDefault` */
     sans: 'system-ui',
-    /** iOS `UIFontDescriptorSystemDesignSerif` */
     serif: 'ui-serif',
-    /** iOS `UIFontDescriptorSystemDesignRounded` */
     rounded: 'ui-rounded',
-    /** iOS `UIFontDescriptorSystemDesignMonospaced` */
     mono: 'ui-monospace',
   },
   default: {
@@ -63,3 +69,4 @@ export const Spacing = {
 
 export const BottomTabInset = Platform.select({ ios: 50, android: 80 }) ?? 0;
 export const MaxContentWidth = 800;
+export const MaxFormWidth = 420;

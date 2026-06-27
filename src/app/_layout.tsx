@@ -1,15 +1,51 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router';
-import { useColorScheme } from 'react-native';
-
+import { DarkTheme, Stack, ThemeProvider } from 'expo-router';
+import {
+  useFonts,
+  Inter_400Regular,
+  Inter_500Medium,
+  Inter_600SemiBold,
+  Inter_700Bold,
+  Inter_800ExtraBold,
+} from '@expo-google-fonts/inter';
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
-import AppTabs from '@/components/app-tabs';
 
-export default function TabLayout() {
-  const colorScheme = useColorScheme();
+export default function RootLayout() {
+  const [fontsLoaded] = useFonts({
+    Inter_400Regular,
+    Inter_500Medium,
+    Inter_600SemiBold,
+    Inter_700Bold,
+    Inter_800ExtraBold,
+  });
+
+  if (!fontsLoaded) {
+    return null;
+  }
+
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+    <ThemeProvider value={DarkTheme}>
       <AnimatedSplashOverlay />
-      <AppTabs />
+      <Stack screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="index" />
+        <Stack.Screen name="login" />
+        <Stack.Screen name="role-select" />
+        <Stack.Screen name="patient-quiz" />
+         <Stack.Screen name="patient-preferences" />
+         <Stack.Screen name="patient-pending" />
+        <Stack.Screen name="psych-specialties" />
+        <Stack.Screen name="psych-mindspa" />
+        <Stack.Screen name="psych-hours" />
+        <Stack.Screen name="psych-account" />
+         <Stack.Screen name="psych-pending" />
+        <Stack.Screen name="(psych-tabs)" />
+        <Stack.Screen name="assignment" />
+        <Stack.Screen name="journal-entry" />
+        <Stack.Screen name="journal-write" />
+        <Stack.Screen name="exercises/breathing" />
+        <Stack.Screen name="(patient-tabs)" />
+        <Stack.Screen name="patient/[id]" />
+        <Stack.Screen name="chat/[id]" />
+      </Stack>
     </ThemeProvider>
   );
 }

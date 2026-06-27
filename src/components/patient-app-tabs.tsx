@@ -9,7 +9,10 @@ const colors = Colors.dark;
 
 type IconName = keyof typeof Ionicons.glyphMap;
 
-export default function AppTabs() {
+// TODO (Supabase): drive this from real unread-message state once chat has a backend
+const HAS_UNREAD_MESSAGES = false;
+
+export default function PatientAppTabs() {
   const insets = useSafeAreaInsets();
 
   return (
@@ -23,11 +26,19 @@ export default function AppTabs() {
         <TabTrigger name="home" href="/" asChild>
           <NavItem label="Home" iconActive="home" iconInactive="home-outline" />
         </TabTrigger>
-        <TabTrigger name="patients" href="/patients" asChild>
-          <NavItem label="Patients" iconActive="people" iconInactive="people-outline" />
+        <TabTrigger name="schedule" href="/schedule" asChild>
+          <NavItem label="Schedule" iconActive="calendar" iconInactive="calendar-outline" />
         </TabTrigger>
-        <TabTrigger name="calendar" href="/calendar" asChild>
-          <NavItem label="Calendar" iconActive="calendar" iconInactive="calendar-outline" />
+        <TabTrigger name="journal" href="/journal" asChild>
+          <NavItem label="Journal" iconActive="book" iconInactive="book-outline" />
+        </TabTrigger>
+        <TabTrigger name="chat" href="/chat" asChild>
+          <NavItem
+            label="Chat"
+            iconActive="chatbubble"
+            iconInactive="chatbubble-outline"
+            showBadge={HAS_UNREAD_MESSAGES}
+          />
         </TabTrigger>
         <TabTrigger name="profile" href="/profile" asChild>
           <NavItem label="Profile" iconActive="person" iconInactive="person-outline" />
@@ -41,9 +52,10 @@ type NavItemProps = TabTriggerSlotProps & {
   label: string;
   iconActive: IconName;
   iconInactive: IconName;
+  showBadge?: boolean;
 };
 
-function NavItem({ label, iconActive, iconInactive, isFocused, ...props }: NavItemProps) {
+function NavItem({ label, iconActive, iconInactive, isFocused, showBadge, ...props }: NavItemProps) {
   return (
     <Pressable {...props} style={styles.navItem}>
       <View style={[styles.navIconWrap, isFocused && styles.navIconWrapActive]}>
@@ -52,6 +64,7 @@ function NavItem({ label, iconActive, iconInactive, isFocused, ...props }: NavIt
           size={22}
           color={isFocused ? colors.gold : colors.tabInactive}
         />
+        {showBadge && <View style={styles.badge} />}
       </View>
       <ThemedText style={[styles.navLabel, { color: isFocused ? colors.gold : colors.tabInactive }]}>
         {label}
@@ -89,5 +102,15 @@ const styles = StyleSheet.create({
     fontSize: 9.5,
     fontWeight: '700',
   },
+  badge: {
+    position: 'absolute',
+    top: -1,
+    right: 4,
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: colors.rose,
+    borderWidth: 1.5,
+    borderColor: colors.backgroundElement,
+  },
 });
-
