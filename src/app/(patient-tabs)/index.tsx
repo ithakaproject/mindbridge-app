@@ -6,7 +6,9 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { TopBar } from '@/components/top-bar';
+import { OptionGrid } from '@/components/option-grid';
 import { Colors, BottomTabInset, Spacing, MaxContentWidth } from '@/constants/theme';
+import { POSITIVE_MOODS, NEGATIVE_MOODS, findMood } from '@/data/journal-options';
 
 const colors = Colors.dark;
 
@@ -19,14 +21,6 @@ function getGreeting() {
   if (hour < 18) return 'Good afternoon,';
   return 'Good evening,';
 }
-
-const MOODS = [
-  { key: 'low', emoji: '😔', label: 'Low' },
-  { key: 'anxious', emoji: '😟', label: 'Anxious' },
-  { key: 'neutral', emoji: '😐', label: 'Neutral' },
-  { key: 'good', emoji: '🙂', label: 'Good' },
-  { key: 'great', emoji: '😄', label: 'Great' },
-];
 
 // TODO (Supabase): replace with the patient's real check-in streak
 const MOOD_STREAK = 7;
@@ -111,7 +105,16 @@ const COURSES = [
 export default function PatientHomeScreen() {
   const [linkRevealed, setLinkRevealed] = useState(false);
   // TODO (Supabase): persist today's mood check-in instead of local-only state
-  const [selectedMood, setSelectedMood] = useState('good');
+  const [todaysMood, setTodaysMood] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [valenceTab, setValenceTab] = useState<'positive' | 'negative'>('positive');
+
+  const moodInfo = todaysMood ? findMood(todaysMood) : undefined;
+
+  const confirmMood = (label: string) => {
+    setTodaysMood(label);
+    setPickerOpen(false);
+  };
 
   const openAssignment = (item: { title: string; sub: string; tag: string; tagColor: TagColor; desc: string }) => {
     router.push({
@@ -173,21 +176,58 @@ export default function PatientHomeScreen() {
               🔥 {MOOD_STREAK} day streak
             </ThemedText>
           </View>
-          <View style={styles.moodRow}>
-            {MOODS.map((m) => {
-              const selected = selectedMood === m.key;
-              return (
-                <Pressable key={m.key} onPress={() => setSelectedMood(m.key)} style={styles.moodBtn}>
-                  <View style={[styles.moodOrb, selected && styles.moodOrbSelected]}>
-                    <ThemedText style={styles.moodEmoji}>{m.emoji}</ThemedText>
+
+          {!pickerOpen && (
+            <Pressable onPress={() => setPickerOpen(true)} style={styles.moodSummaryRow}>
+              {moodInfo ? (
+                <>
+                  <ThemedText style={styles.moodSummaryEmoji}>{moodInfo.emoji}</ThemedText>
+                  <View style={{ flex: 1 }}>
+                    <ThemedText style={styles.moodSummaryLabel}>{moodInfo.label}</ThemedText>
+                    <ThemedText type="small" themeColor="textTertiary">
+                      Tap to update today's check-in
+                    </ThemedText>
                   </View>
-                  <ThemedText type="small" style={[styles.moodWord, selected && styles.moodWordSelected]}>
-                    {m.label}
+                </>
+              ) : (
+                <ThemedText style={styles.moodCheckInPrompt}>Tap to check in →</ThemedText>
+              )}
+            </Pressable>
+          )}
+
+          {pickerOpen && (
+            <>
+              <View style={styles.valenceTabs}>
+                <Pressable
+                  onPress={() => setValenceTab('positive')}
+                  style={[styles.valenceTab, valenceTab === 'positive' && styles.valenceTabOnPositive]}>
+                  <ThemedText
+                    style={[styles.valenceTabText, valenceTab === 'positive' && styles.valenceTabTextOn]}>
+                    Positive
                   </ThemedText>
                 </Pressable>
-              );
-            })}
-          </View>
+                <Pressable
+                  onPress={() => setValenceTab('negative')}
+                  style={[styles.valenceTab, valenceTab === 'negative' && styles.valenceTabOnNegative]}>
+                  <ThemedText
+                    style={[styles.valenceTabText, valenceTab === 'negative' && styles.valenceTabTextOn]}>
+                    Negative
+                  </ThemedText>
+                </Pressable>
+              </View>
+              <OptionGrid
+                options={valenceTab === 'positive' ? POSITIVE_MOODS : NEGATIVE_MOODS}
+                selected={todaysMood}
+                onSelect={confirmMood}
+                accentColor={valenceTab === 'positive' ? colors.green : colors.rose}
+              />
+              <Pressable onPress={() => setPickerOpen(false)} style={styles.moodCancelBtn}>
+                <ThemedText type="small" themeColor="textTertiary">
+                  Cancel
+                </ThemedText>
+              </Pressable>
+            </>
+          )}
         </View>
 
         {/* Stat strip */}
@@ -415,38 +455,53 @@ const styles = StyleSheet.create({
     color: colors.amber,
     fontWeight: '600',
   },
-  moodRow: {
+  moodSummaryRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  moodBtn: {
     alignItems: 'center',
-    gap: 4,
+    gap: 12,
   },
-  moodOrb: {
-    width: 40,
-    height: 40,
+  moodSummaryEmoji: {
+    fontSize: 30,
+  },
+  moodSummaryLabel: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  moodCheckInPrompt: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.gold,
+  },
+  valenceTabs: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 10,
+  },
+  valenceTab: {
+    paddingVertical: 6,
+    paddingHorizontal: 16,
     borderRadius: 20,
     backgroundColor: colors.backgroundSelected,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 2,
-    borderColor: 'transparent',
   },
-  moodOrbSelected: {
-    borderColor: colors.gold,
-    backgroundColor: `${colors.gold}26`,
+  valenceTabOnPositive: {
+    backgroundColor: colors.green,
   },
-  moodEmoji: {
-    fontSize: 19,
+  valenceTabOnNegative: {
+    backgroundColor: colors.rose,
   },
-  moodWord: {
-    fontSize: 9,
+  valenceTabText: {
+    fontSize: 12,
     fontWeight: '600',
     color: colors.textTertiary,
   },
-  moodWordSelected: {
-    color: colors.gold,
+  valenceTabTextOn: {
+    color: '#fff',
+    fontWeight: '700',
+  },
+  moodCancelBtn: {
+    alignItems: 'center',
+    paddingTop: 8,
   },
   statStrip: {
     flexDirection: 'row',

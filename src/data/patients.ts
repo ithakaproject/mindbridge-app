@@ -19,8 +19,13 @@ export type ChatMessage =
   | { f: 'them' | 'me'; t: string }
   | { f: 'assign'; title: string; sub: string; done: boolean };
 
+export type CustomJournalQuestion = { id: string; question: string };
+
 export type Patient = {
   id: string;
+  // TODO (Supabase): persist these per-patient instead of seeding as static defaults
+  assignedJournalQuestions: string[]; // keys matching REFLECTION_QUESTIONS in journal-options.ts
+  customJournalQuestions: CustomJournalQuestion[];
   initials: string;
   color: string;
   name: string;
@@ -53,6 +58,8 @@ export const FLAGS: Record<RiskFlag, { label: string; color: 'green' | 'amber' |
 export const PATIENTS: Record<string, Patient> = {
   aj: {
     id: 'aj',
+    assignedJournalQuestions: ['want', 'mentalHealth'],
+    customJournalQuestions: [],
     initials: 'AJ',
     color: '#258F80',
     name: 'Alex Johnson',
@@ -114,6 +121,8 @@ export const PATIENTS: Record<string, Patient> = {
   },
   mc: {
     id: 'mc',
+    assignedJournalQuestions: [],
+    customJournalQuestions: [],
     initials: 'MC',
     color: '#C8943A',
     name: 'Maya Chen',
@@ -149,6 +158,8 @@ export const PATIENTS: Record<string, Patient> = {
   },
   dr: {
     id: 'dr',
+    assignedJournalQuestions: [],
+    customJournalQuestions: [],
     initials: 'DR',
     color: '#52C48A',
     name: 'Daniel Rivera',
@@ -173,6 +184,8 @@ export const PATIENTS: Record<string, Patient> = {
   },
   pn: {
     id: 'pn',
+    assignedJournalQuestions: [],
+    customJournalQuestions: [],
     initials: 'PN',
     color: '#A07ED4',
     name: 'Priya Nair',

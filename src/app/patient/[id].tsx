@@ -8,8 +8,10 @@ import { BottomSheetModal } from '@/components/bottom-sheet-modal';
 import { AssignModal, type AssignmentTemplate } from '@/components/assign-modal';
 import { SuccessModal } from '@/components/success-modal';
 import { JournalRequestModal } from '@/components/journal-request-modal';
+import { ToggleSwitch } from '@/components/toggle-switch';
 import { Colors, Spacing, MaxContentWidth, BottomTabInset } from '@/constants/theme';
 import { PATIENTS, FLAGS, type Assignment } from '@/data/patients';
+import { REFLECTION_QUESTIONS } from '@/data/journal-options';
 
 const colors = Colors.dark;
 
@@ -34,9 +36,14 @@ export default function PatientProfileScreen() {
 
   const [notesModalOpen, setNotesModalOpen] = useState(false);
   const [draftNote, setDraftNote] = useState('');
-  // TODO (Supabase): persist notes/assignments to the patient's record instead of local-only state
+  // TODO (Supabase): persist notes/assignments/journal questions to the patient's
+  // record instead of local-only state
   const [savedNotes, setSavedNotes] = useState(patient?.notes ?? '');
   const [assignments, setAssignments] = useState(patient?.assignments ?? []);
+
+  const [assignedQuestions, setAssignedQuestions] = useState(patient?.assignedJournalQuestions ?? []);
+  const [customQuestions, setCustomQuestions] = useState(patient?.customJournalQuestions ?? []);
+  const [newCustomQuestion, setNewCustomQuestion] = useState('');
 
   const [assignModalOpen, setAssignModalOpen] = useState(false);
   const [journalModalOpen, setJournalModalOpen] = useState(false);
@@ -100,6 +107,22 @@ export default function PatientProfileScreen() {
     setSavedNotes(draftNote.trim());
     setNotesModalOpen(false);
     setSuccessInfo({ icon: '📝', title: 'Notes saved', subtitle: 'Your session notes have been saved privately.' });
+  };
+
+  // TODO (Supabase): persist this per-patient instead of local-only state
+  const toggleQuestion = (key: string) => {
+    setAssignedQuestions((prev) =>
+      prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key],
+    );
+  };
+  const addCustomQuestion = () => {
+    const text = newCustomQuestion.trim();
+    if (!text) return;
+    setCustomQuestions((prev) => [...prev, { id: `custom-${Date.now()}`, question: text }]);
+    setNewCustomQuestion('');
+  };
+  const removeCustomQuestion = (id: string) => {
+    setCustomQuestions((prev) => prev.filter((q) => q.id !== id));
   };
 
   const goToSchedule = () => router.push('/calendar');
@@ -261,6 +284,47 @@ export default function PatientProfileScreen() {
             </View>
           ))
         )}
+
+        {/* Journal questions */}
+        <ThemedText style={[styles.secLabel, { marginTop: 4 }]}>Journal questions</ThemedText>
+        <ThemedText type="small" themeColor="textSecondary" style={{ marginBottom: 10 }}>
+          Choose which reflection prompts appear in {patient.name.split(' ')[0]}'s journal.
+        </ThemedText>
+        {REFLECTION_QUESTIONS.map((q) => {
+          const isOn = assignedQuestions.includes(q.key);
+          return (
+            <View key={q.key} style={styles.questionRow}>
+              <ThemedText style={styles.questionText} numberOfLines={2}>
+                {q.question}
+              </ThemedText>
+              <ToggleSwitch value={isOn} onValueChange={() => toggleQuestion(q.key)} size="small" />
+            </View>
+          );
+        })}
+
+        {customQuestions.map((q) => (
+          <View key={q.id} style={styles.questionRow}>
+            <ThemedText style={styles.questionText} numberOfLines={2}>
+              {q.question}
+            </ThemedText>
+            <Pressable onPress={() => removeCustomQuestion(q.id)} hitSlop={8}>
+              <Ionicons name="close-circle" size={18} color={colors.rose} />
+            </Pressable>
+          </View>
+        ))}
+
+        <View style={styles.addQuestionRow}>
+          <TextInput
+            value={newCustomQuestion}
+            onChangeText={setNewCustomQuestion}
+            placeholder="Write a custom question…"
+            placeholderTextColor={colors.textTertiary}
+            style={styles.addQuestionInput}
+          />
+          <Pressable onPress={addCustomQuestion} style={styles.addQuestionBtn}>
+            <Ionicons name="add" size={18} color={colors.background} />
+          </Pressable>
+        </View>
       </ScrollView>
 
       <BottomSheetModal
@@ -453,6 +517,14 @@ const styles = StyleSheet.create({
   sparkLabels: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 5 },
   sparkLbl: { fontSize: 9 },
   secLabelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingBottom: 8, marginTop: 4 },
+  secLabel: {
+    fontSize: 10.5,
+    fontWeight: '700',
+    color: colors.textTertiary,
+    textTransform: 'uppercase',
+    letterSpacing: 1.1,
+    paddingBottom: 8,
+  },
   secMain: { fontSize: 10.5, fontWeight: '700', color: colors.textTertiary, textTransform: 'uppercase', letterSpacing: 1.1 },
   assignRow: {
     flexDirection: 'row',
@@ -469,4 +541,44 @@ const styles = StyleSheet.create({
   assignSub: { marginTop: 2 },
   pill: { paddingVertical: 2, paddingHorizontal: 7, borderRadius: 6 },
   pillText: { fontSize: 10, fontWeight: '700' },
+  questionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: colors.backgroundSelected,
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 13,
+    marginBottom: 7,
+  },
+  questionText: {
+    flex: 1,
+    fontSize: 12.5,
+    color: colors.text,
+    lineHeight: 17,
+  },
+  addQuestionRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 4,
+  },
+  addQuestionInput: {
+    flex: 1,
+    backgroundColor: colors.backgroundSelected,
+    borderWidth: 0.5,
+    borderColor: colors.border,
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 13,
+    fontSize: 13,
+    color: colors.text,
+  },
+  addQuestionBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: colors.gold,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 });

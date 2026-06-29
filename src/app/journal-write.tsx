@@ -3,30 +3,31 @@ import { ScrollView, View, Pressable, TextInput, StyleSheet } from 'react-native
 import { router } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { ToggleSwitch } from '@/components/toggle-switch';
+import { OptionGrid } from '@/components/option-grid';
 import { SuccessModal } from '@/components/success-modal';
 import { Colors, Spacing, MaxContentWidth } from '@/constants/theme';
+import { POSITIVE_MOODS, NEGATIVE_MOODS, BODY_FEELINGS, REFLECTION_QUESTIONS } from '@/data/journal-options';
+import { PATIENTS } from '@/data/patients';
 
 const colors = Colors.dark;
 
-const WRITE_MOODS = [
-  { emoji: '😔', label: 'Anxious' },
-  { emoji: '😐', label: 'Neutral' },
-  { emoji: '🙂', label: 'Hopeful' },
-  { emoji: '😊', label: 'Calm' },
-  { emoji: '😄', label: 'Happy' },
-];
+// TODO (Supabase + auth): look up the logged-in patient instead of hardcoding "aj"
+const CURRENT_PATIENT = PATIENTS.aj;
 
 export default function JournalWriteScreen() {
-  const [selectedMood, setSelectedMood] = useState('Hopeful');
-  const [text, setText] = useState('');
-  const [shared, setShared] = useState(false);
+  const [valenceTab, setValenceTab] = useState<'positive' | 'negative'>('positive');
+  const [mood, setMood] = useState<string | null>(null);
+  const [bodyFeeling, setBodyFeeling] = useState<string | null>(null);
+  const [thoughts, setThoughts] = useState('');
+  const [answers, setAnswers] = useState<Record<string, string>>({});
   const [successOpen, setSuccessOpen] = useState(false);
 
-  // TODO (Supabase): persist the entry instead of just showing a success message
+  const canSave = !!mood && !!bodyFeeling && thoughts.trim().length > 0;
+
+  // TODO (Supabase): persist the full entry (mood, valence, body feeling, thoughts,
+  // and any answered reflection questions) instead of just showing a success message
   const handleSave = () => {
-    if (!text.trim()) return;
+    if (!canSave) return;
     setSuccessOpen(true);
   };
 
@@ -35,56 +36,119 @@ export default function JournalWriteScreen() {
     router.back();
   };
 
+  const assignedStandard = REFLECTION_QUESTIONS.filter((q) =>
+    CURRENT_PATIENT.assignedJournalQuestions.includes(q.key),
+  );
+  const hasAnyReflection = assignedStandard.length > 0 || CURRENT_PATIENT.customJournalQuestions.length > 0;
+  let qNum = 4;
+
   return (
-    <ThemedView style={styles.screen}>
+    <View style={styles.screen}>
       <View style={styles.header}>
         <Pressable onPress={() => router.back()} hitSlop={12}>
           <Ionicons name="chevron-back" size={24} color={colors.gold} />
         </Pressable>
         <ThemedText style={styles.headerTitle}>New Entry</ThemedText>
-        <Pressable onPress={handleSave} style={styles.saveBtn}>
+        <Pressable onPress={handleSave} disabled={!canSave} style={[styles.saveBtn, !canSave && styles.saveBtnDisabled]}>
           <ThemedText style={styles.saveBtnText}>Save</ThemedText>
         </Pressable>
       </View>
 
       <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
-        <ThemedText style={styles.label}>HOW ARE YOU FEELING?</ThemedText>
-        <View style={styles.moodRow}>
-          {WRITE_MOODS.map((m) => {
-            const selected = selectedMood === m.label;
-            return (
-              <Pressable key={m.label} onPress={() => setSelectedMood(m.label)} style={styles.moodOpt}>
-                <View style={[styles.moodOrb, selected && styles.moodOrbSelected]}>
-                  <ThemedText style={styles.moodEmoji}>{m.emoji}</ThemedText>
-                </View>
-                <ThemedText type="small" style={[styles.moodLbl, selected && styles.moodLblSelected]}>
-                  {m.label}
-                </ThemedText>
-              </Pressable>
-            );
-          })}
+        {/* Q1: mood */}
+        <ThemedText style={styles.qLabel}>1. WHAT IS YOUR MOOD TODAY?</ThemedText>
+        <View style={styles.valenceTabs}>
+          <Pressable
+            onPress={() => setValenceTab('positive')}
+            style={[styles.valenceTab, valenceTab === 'positive' && styles.valenceTabOnPositive]}>
+            <ThemedText style={[styles.valenceTabText, valenceTab === 'positive' && styles.valenceTabTextOn]}>
+              Positive
+            </ThemedText>
+          </Pressable>
+          <Pressable
+            onPress={() => setValenceTab('negative')}
+            style={[styles.valenceTab, valenceTab === 'negative' && styles.valenceTabOnNegative]}>
+            <ThemedText style={[styles.valenceTabText, valenceTab === 'negative' && styles.valenceTabTextOn]}>
+              Negative
+            </ThemedText>
+          </Pressable>
         </View>
+        <OptionGrid
+          options={valenceTab === 'positive' ? POSITIVE_MOODS : NEGATIVE_MOODS}
+          selected={mood}
+          onSelect={setMood}
+          accentColor={valenceTab === 'positive' ? colors.green : colors.rose}
+        />
 
-        <ThemedText style={[styles.label, { marginBottom: 8 }]}>YOUR THOUGHTS</ThemedText>
+        {/* Q2: body feeling */}
+        <ThemedText style={[styles.qLabel, { marginTop: 20 }]}>2. HOW IS YOUR BODY FEELING?</ThemedText>
+        <OptionGrid options={BODY_FEELINGS} selected={bodyFeeling} onSelect={setBodyFeeling} accentColor={colors.teal} />
+
+        {/* Q3: thoughts */}
+        <ThemedText style={[styles.qLabel, { marginTop: 20 }]}>3. WRITE DOWN YOUR THOUGHTS</ThemedText>
         <TextInput
-          value={text}
-          onChangeText={setText}
+          value={thoughts}
+          onChangeText={setThoughts}
           placeholder="Write freely — this is your space…"
           placeholderTextColor={colors.textTertiary}
           multiline
-          numberOfLines={6}
+          numberOfLines={5}
           style={styles.textarea}
         />
 
-        <View style={styles.shareRow}>
-          <ThemedText type="small" themeColor="textTertiary">
-            Share with Dr. Patel
-          </ThemedText>
-          <ToggleSwitch value={shared} onValueChange={setShared} size="small" />
-        </View>
-        <ThemedText type="small" themeColor="textTertiary" style={styles.shareHint}>
-          Private by default · Only shared if you enable the toggle
-        </ThemedText>
+        {/* Q4+: optional reflection questions, filtered to what this patient's psychologist assigned */}
+        {!hasAnyReflection ? (
+          <>
+            <ThemedText style={[styles.qLabel, { marginTop: 20 }]}>
+              THERAPEUTIC QUESTIONS FROM YOUR PSYCHOLOGIST
+            </ThemedText>
+            <ThemedText type="small" themeColor="textTertiary">
+              Dr. Patel hasn't assigned any reflection questions yet.
+            </ThemedText>
+          </>
+        ) : (
+          <>
+            <ThemedText style={[styles.qLabel, { marginTop: 20 }]}>
+              THERAPEUTIC QUESTIONS FROM YOUR PSYCHOLOGIST (OPTIONAL)
+            </ThemedText>
+            {assignedStandard.map((q) => {
+              const num = qNum++;
+              return (
+                <View key={q.key} style={styles.reflectionBlock}>
+                  <ThemedText style={styles.reflectionQ}>
+                    {num}. {q.question}
+                  </ThemedText>
+                  <TextInput
+                    value={answers[q.key] ?? ''}
+                    onChangeText={(text) => setAnswers((prev) => ({ ...prev, [q.key]: text }))}
+                    placeholder={`Example: ${q.example}`}
+                    placeholderTextColor={colors.textTertiary}
+                    multiline
+                    style={styles.reflectionInput}
+                  />
+                </View>
+              );
+            })}
+            {CURRENT_PATIENT.customJournalQuestions.map((q) => {
+              const num = qNum++;
+              return (
+                <View key={q.id} style={styles.reflectionBlock}>
+                  <ThemedText style={styles.reflectionQ}>
+                    {num}. {q.question}
+                  </ThemedText>
+                  <TextInput
+                    value={answers[q.id] ?? ''}
+                    onChangeText={(text) => setAnswers((prev) => ({ ...prev, [q.id]: text }))}
+                    placeholder="Your answer…"
+                    placeholderTextColor={colors.textTertiary}
+                    multiline
+                    style={styles.reflectionInput}
+                  />
+                </View>
+              );
+            })}
+          </>
+        )}
       </ScrollView>
 
       <SuccessModal
@@ -94,12 +158,12 @@ export default function JournalWriteScreen() {
         title="Entry saved!"
         subtitle="Your journal entry has been saved privately."
       />
-    </ThemedView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1 },
+  screen: { flex: 1, backgroundColor: colors.background },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -125,6 +189,9 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     paddingHorizontal: 14,
   },
+  saveBtnDisabled: {
+    opacity: 0.4,
+  },
   saveBtnText: {
     color: '#fff',
     fontSize: 12,
@@ -137,70 +204,70 @@ const styles = StyleSheet.create({
     maxWidth: MaxContentWidth,
     paddingHorizontal: Spacing.three,
     paddingTop: 14,
-    paddingBottom: 24,
+    paddingBottom: 30,
   },
-  label: {
+  qLabel: {
     fontSize: 11,
     fontWeight: '700',
     color: colors.textTertiary,
-    textTransform: 'uppercase',
-    letterSpacing: 0.9,
+    letterSpacing: 0.7,
     marginBottom: 10,
   },
-  moodRow: {
+  valenceTabs: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
-    marginBottom: 16,
+    gap: 8,
+    marginBottom: 10,
   },
-  moodOpt: {
-    alignItems: 'center',
-    gap: 4,
+  valenceTab: {
+    paddingVertical: 7,
+    paddingHorizontal: 18,
+    borderRadius: 20,
+    backgroundColor: colors.backgroundElement,
   },
-  moodOrb: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: colors.backgroundSelected,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 2,
-    borderColor: 'transparent',
+  valenceTabOnPositive: {
+    backgroundColor: colors.green,
   },
-  moodOrbSelected: {
-    borderColor: colors.gold,
-    backgroundColor: `${colors.gold}24`,
+  valenceTabOnNegative: {
+    backgroundColor: colors.rose,
   },
-  moodEmoji: {
-    fontSize: 24,
-  },
-  moodLbl: {
-    fontSize: 9.5,
+  valenceTabText: {
+    fontSize: 12.5,
     fontWeight: '600',
     color: colors.textTertiary,
   },
-  moodLblSelected: {
-    color: colors.gold,
+  valenceTabTextOn: {
+    color: '#fff',
+    fontWeight: '700',
   },
   textarea: {
-    backgroundColor: colors.backgroundSelected,
+    backgroundColor: colors.backgroundElement,
     borderWidth: 0.5,
     borderColor: colors.border,
     borderRadius: 14,
     padding: 13,
     fontSize: 13.5,
     color: colors.text,
-    fontStyle: 'italic',
-    minHeight: 130,
+    minHeight: 120,
     textAlignVertical: 'top',
   },
-  shareRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: 12,
+  reflectionBlock: {
+    marginBottom: 14,
   },
-  shareHint: {
-    marginTop: 6,
-    lineHeight: 16,
+  reflectionQ: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.text,
+    marginBottom: 6,
+  },
+  reflectionInput: {
+    backgroundColor: colors.backgroundElement,
+    borderWidth: 0.5,
+    borderColor: colors.border,
+    borderRadius: 12,
+    padding: 12,
+    fontSize: 12.5,
+    color: colors.textSecondary,
+    minHeight: 50,
+    textAlignVertical: 'top',
   },
 });
