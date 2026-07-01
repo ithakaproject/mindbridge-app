@@ -6,6 +6,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useTheme } from '@/hooks/use-theme';
 import { Spacing, MaxContentWidth, MaxFormWidth } from '@/constants/theme';
+import { supabase } from '@/lib/supabase';
 
 export default function PatientAccountScreen() {
   const theme = useTheme();
@@ -13,14 +14,68 @@ export default function PatientAccountScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
-  const canSubmit = fullName.trim() !== '' && email.trim() !== '' && password.trim() !== '';
+  const canSubmit =
+    fullName.trim() !== '' &&
+    email.trim() !== '' &&
+    password.trim() !== '' &&
+    !loading;
 
-  function handleSubmit() {
-    // TODO: once Supabase is wired up:
-    // 1. create the auth user (email/password)
-    // 2. insert a row into patient_profiles with the quiz answers collected earlier
-    // 3. later: run the matching algorithm and let the patient pick from their top matches
+  async function handleSubmit() {
+    setError('');
+    setLoading(true);
+
+    // 1. Create the auth user, passing role in metadata so the trigger
+    //    writes the correct role into the profiles table automatically.
+    const { data, error: signUpError } = await supabase.auth.signUp({
+      email: email.trim(),
+      password,
+      options: {
+        data: { role: 'patient' },
+      },
+    });
+
+    if (signUpError) {
+      setError(signUpError.message);
+      setLoading(false);
+      return;
+    }
+
+    const userId = data.user?.id;
+    if (!userId) {
+      setError('Signup failed. Please try again.');
+      setLoading(false);
+      return;
+    }
+
+    // 2. Update the profiles row (created by the trigger) with full name.
+    const { error: profileError } = await supabase
+      .from('profiles')
+      .update({ full_name: fullName.trim() })
+      .eq('id', userId);
+
+    if (profileError) {
+      setError('Account created but profile update failed. Please contact support.');
+      setLoading(false);
+      return;
+    }
+
+    // 3. Create the patient_profiles row.
+    //    Quiz answers from earlier screens will be wired in later
+    //    when we tackle passing data between onboarding screens.
+    const { error: patientError } = await supabase
+      .from('patient_profiles')
+      .insert({ id: userId });
+
+    if (patientError) {
+      setError('Account created but patient profile failed. Please contact support.');
+      setLoading(false);
+      return;
+    }
+
+    setLoading(false);
     router.replace('/patient-pending');
   }
 
@@ -79,16 +134,21 @@ export default function PatientAccountScreen() {
                 </Pressable>
               </ThemedView>
 
+              {error !== '' && (
+                <ThemedText type="small" themeColor="error">
+                  {error}
+                </ThemedText>
+              )}
+
               <Pressable
                 style={[
                   styles.primaryBtn,
-                  { backgroundColor: theme.teal },
-                  !canSubmit && styles.disabledBtn,
+                  { backgroundColor: canSubmit ? theme.teal : theme.border },
                 ]}
                 disabled={!canSubmit}
                 onPress={handleSubmit}>
                 <ThemedText type="smallBold" style={{ color: theme.textOnAccent }}>
-                  Create account
+                  {loading ? 'Creating account…' : 'Create account'}
                 </ThemedText>
               </Pressable>
             </ThemedView>
@@ -101,9 +161,20 @@ export default function PatientAccountScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, alignItems: 'center' },
-  safeArea: { flex: 1, width: '100%', maxWidth: MaxContentWidth, paddingHorizontal: Spacing.four, paddingTop: Spacing.three },
+  safeArea: {
+    flex: 1,
+    width: '100%',
+    maxWidth: MaxContentWidth,
+    paddingHorizontal: Spacing.four,
+    paddingTop: Spacing.three,
+  },
   formWrap: { flex: 1, width: '100%' },
-  scrollContent: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: Spacing.four },
+  scrollContent: {
+    flexGrow: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: Spacing.four,
+  },
   card: { width: '100%', maxWidth: MaxFormWidth, gap: Spacing.three },
   subtitle: { marginBottom: Spacing.two },
   inputWrap: {
@@ -121,5 +192,4 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: Spacing.two,
   },
-  disabledBtn: { opacity: 0.4 },
 });

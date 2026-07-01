@@ -1,17 +1,15 @@
-import { useState } from 'react';
-import { ScrollView, View, Pressable, StyleSheet } from 'react-native';
+import { useState, useEffect, useCallback } from 'react';
+import { ScrollView, View, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { TopBar } from '@/components/top-bar';
 import { Colors, BottomTabInset, Spacing, MaxContentWidth } from '@/constants/theme';
+import { supabase } from '@/lib/supabase';
 
 const colors = Colors.dark;
-
-// TODO (Supabase): replace with the authenticated psychologist's real name + greeting data
-const DOCTOR_NAME = 'Dr. Anita Patel';
 
 function getGreeting() {
   const hour = new Date().getHours();
@@ -20,29 +18,136 @@ function getGreeting() {
   return 'Good evening,';
 }
 
-// TODO (Supabase): replace with real stats + session data once backend is connected
-const STATS = [
-  { label: 'Patients', value: '8' },
-  { label: 'Today', value: '4' },
-  { label: 'Pending', value: '2' },
-];
+function getSessionTag(startTime: string): { tag: string; tagColor: string } {
+  const now = new Date();
+  const start = new Date(startTime);
+  const diffMins = (start.getTime() - now.getTime()) / 60000;
 
-const TODAY_SESSIONS = [
-  { id: 'aj', time: '3:00 PM', name: 'Alex Johnson', tag: 'Now', tagColor: colors.rose },
-  { id: 'mc', time: '5:00 PM', name: 'Maya Chen', tag: 'Later', tagColor: colors.teal },
-];
+  if (diffMins < 0 && diffMins > -60) return { tag: 'Now', tagColor: colors.rose };
+  if (diffMins >= 0 && diffMins <= 120) return { tag: 'Soon', tagColor: colors.amber };
 
-const TOMORROW_SESSIONS = [
-  { id: 'dr', time: '9:00 AM', name: 'Daniel Rivera', tag: 'Tmrw', tagColor: colors.textTertiary },
-  { id: 'pn', time: '11:30 AM', name: 'Priya Nair', tag: 'Tmrw', tagColor: colors.textTertiary },
-];
+  const isToday = start.toDateString() === now.toDateString();
+  if (isToday) return { tag: 'Later', tagColor: colors.teal };
+
+  const tomorrow = new Date(now);
+  tomorrow.setDate(now.getDate() + 1);
+  const isTomorrow = start.toDateString() === tomorrow.toDateString();
+  if (isTomorrow) return { tag: 'Tmrw', tagColor: colors.textTertiary };
+
+  return { tag: start.toLocaleDateString(), tagColor: colors.textTertiary };
+}
+
+function formatTime(isoString: string) {
+  return new Date(isoString).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+type SessionRow = {
+  id: string;
+  start_time: string;
+  duration: number;
+  meeting_link: string | null;
+  patient: {
+    id: string;
+    full_name: string;
+  };
+};
 
 export default function HomeScreen() {
   const [linkRevealed, setLinkRevealed] = useState(false);
+  const [doctorName, setDoctorName] = useState('');
+  const [todaySessions, setTodaySessions] = useState<SessionRow[]>([]);
+  const [tomorrowSessions, setTomorrowSessions] = useState<SessionRow[]>([]);
+  const [nextSession, setNextSession] = useState<SessionRow | null>(null);
+  const [stats, setStats] = useState({ patients: 0, today: 0, pending: 0 });
+  const [loading, setLoading] = useState(true);
 
-  const openPatient = (id: string) => {
-    router.push(`/patient/${id}`);
-  };
+  async function loadData() {
+    setLoading(true);
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    // Fetch doctor name
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('full_name')
+      .eq('id', user.id)
+      .single();
+    if (profile) setDoctorName(profile.full_name ?? '');
+
+    // Date boundaries
+    const now = new Date();
+    const todayStart = new Date(now);
+    todayStart.setHours(0, 0, 0, 0);
+    const todayEnd = new Date(now);
+    todayEnd.setHours(23, 59, 59, 999);
+    const tomorrowStart = new Date(todayEnd);
+    tomorrowStart.setDate(tomorrowStart.getDate() + 1);
+    tomorrowStart.setHours(0, 0, 0, 0);
+    const tomorrowEnd = new Date(tomorrowStart);
+    tomorrowEnd.setHours(23, 59, 59, 999);
+
+    // Fetch today's sessions
+    const { data: todayData } = await supabase
+      .from('sessions')
+      .select('id, start_time, duration, meeting_link, patient:patient_id(id, full_name)')
+      .eq('psychologist_id', user.id)
+      .gte('start_time', todayStart.toISOString())
+      .lte('start_time', todayEnd.toISOString())
+      .order('start_time');
+    setTodaySessions((todayData as any) ?? []);
+
+    // Fetch tomorrow's sessions
+    const { data: tomorrowData } = await supabase
+      .from('sessions')
+      .select('id, start_time, duration, meeting_link, patient:patient_id(id, full_name)')
+      .eq('psychologist_id', user.id)
+      .gte('start_time', tomorrowStart.toISOString())
+      .lte('start_time', tomorrowEnd.toISOString())
+      .order('start_time');
+    setTomorrowSessions((tomorrowData as any) ?? []);
+
+    // Next upcoming session
+    const { data: nextData } = await supabase
+      .from('sessions')
+      .select('id, start_time, duration, meeting_link, patient:patient_id(id, full_name)')
+      .eq('psychologist_id', user.id)
+      .gte('start_time', now.toISOString())
+      .order('start_time')
+      .limit(1)
+      .single();
+    setNextSession((nextData as any) ?? null);
+
+    // Stats
+    const { count: patientCount } = await supabase
+      .from('patient_profiles')
+      .select('*', { count: 'exact', head: true })
+      .eq('psychologist_id', user.id);
+
+    setStats({
+      patients: patientCount ?? 0,
+      today: todayData?.length ?? 0,
+      pending: 0, // TODO: wire up pending assignments count later
+    });
+
+    setLoading(false);
+  }
+
+  // Reload every time the tab comes into focus
+  useFocusEffect(useCallback(() => { loadData(); }, []));
+
+  const openPatient = (id: string) => router.push(`/patient/${id}`);
+
+  if (loading) {
+    return (
+      <ThemedView style={styles.screen}>
+        <TopBar />
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+          <ActivityIndicator color={colors.teal} />
+        </View>
+      </ThemedView>
+    );
+  }
 
   return (
     <ThemedView style={styles.screen}>
@@ -57,48 +162,62 @@ export default function HomeScreen() {
           <ThemedText type="small" themeColor="textSecondary">
             {getGreeting()}
           </ThemedText>
-          <ThemedText style={styles.greetingName}>{DOCTOR_NAME}</ThemedText>
+          <ThemedText style={styles.greetingName}>
+            {doctorName || 'Doctor'}
+          </ThemedText>
         </View>
 
         {/* Focus card — next session */}
-        <Pressable onPress={() => setLinkRevealed((v) => !v)} style={styles.focusCard}>
-          <LinearGradient
-            colors={[colors.tealDeep, colors.tealDim]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.focusInner}>
-            <View style={styles.focusGlow} />
-            <ThemedText style={styles.focusEyebrow}>NEXT SESSION</ThemedText>
-            <ThemedText style={styles.focusTitle}>Alex Johnson</ThemedText>
-            <ThemedText style={styles.focusSub}>Today · 3:00 – 3:50 PM · In 2 hours</ThemedText>
-          </LinearGradient>
-          <View style={styles.focusAction}>
-            <ThemedText style={styles.focusActionLabel}>
-              {linkRevealed ? 'Tap to hide meeting link' : 'Tap to reveal meeting link'}
-            </ThemedText>
-            <Ionicons name="videocam" size={16} color="rgba(255,255,255,0.7)" />
-          </View>
-        </Pressable>
-
-        {linkRevealed && (
-          <View style={styles.linkCard}>
-            <Ionicons name="videocam" size={18} color={colors.teal} />
-            <ThemedText style={styles.linkText}>meet.google.com/xyz-abcd-efg</ThemedText>
-            <Pressable style={styles.linkBtn}>
-              <ThemedText type="small" style={styles.linkBtnText}>
-                Start
-              </ThemedText>
+        {nextSession ? (
+          <>
+            <Pressable onPress={() => setLinkRevealed((v) => !v)} style={styles.focusCard}>
+              <LinearGradient
+                colors={[colors.tealDeep, colors.tealDim]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.focusInner}>
+                <View style={styles.focusGlow} />
+                <ThemedText style={styles.focusEyebrow}>NEXT SESSION</ThemedText>
+                <ThemedText style={styles.focusTitle}>
+                  {(nextSession.patient as any)?.full_name ?? 'Patient'}
+                </ThemedText>
+                <ThemedText style={styles.focusSub}>
+                  {formatTime(nextSession.start_time)} · {nextSession.duration} min
+                </ThemedText>
+              </LinearGradient>
+              <View style={styles.focusAction}>
+                <ThemedText style={styles.focusActionLabel}>
+                  {linkRevealed ? 'Tap to hide meeting link' : 'Tap to reveal meeting link'}
+                </ThemedText>
+                <Ionicons name="videocam" size={16} color="rgba(255,255,255,0.7)" />
+              </View>
             </Pressable>
-          </View>
+
+            {linkRevealed && nextSession.meeting_link && (
+              <View style={styles.linkCard}>
+                <Ionicons name="videocam" size={18} color={colors.teal} />
+                <ThemedText style={styles.linkText}>{nextSession.meeting_link}</ThemedText>
+                <Pressable style={styles.linkBtn}>
+                  <ThemedText type="small" style={styles.linkBtnText}>Start</ThemedText>
+                </Pressable>
+              </View>
+            )}
+          </>
+        ) : (
+          <ThemedView type="backgroundElement" style={styles.noSession}>
+            <ThemedText themeColor="textSecondary">No upcoming sessions scheduled.</ThemedText>
+          </ThemedView>
         )}
 
         {/* Stat strip */}
         <View style={styles.statStrip}>
-          {STATS.map((stat) => (
+          {[
+            { label: 'Patients', value: String(stats.patients) },
+            { label: 'Today', value: String(stats.today) },
+            { label: 'Pending', value: String(stats.pending) },
+          ].map((stat) => (
             <ThemedView key={stat.label} type="backgroundElement" style={styles.statCard}>
-              <ThemedText themeColor="gold" style={styles.statNum}>
-                {stat.value}
-              </ThemedText>
+              <ThemedText themeColor="gold" style={styles.statNum}>{stat.value}</ThemedText>
               <ThemedText type="small" themeColor="textTertiary" style={styles.statLabel}>
                 {stat.label}
               </ThemedText>
@@ -109,21 +228,43 @@ export default function HomeScreen() {
         {/* Today */}
         <View style={styles.secLabelRow}>
           <ThemedText style={styles.secMain}>Today</ThemedText>
-          <Pressable onPress={() => router.push('/calendar')}>
-            <ThemedText type="small" themeColor="teal">
-              Full calendar
-            </ThemedText>
+          <Pressable onPress={() => router.push('/(psych-tabs)/calendar')}>
+            <ThemedText type="small" themeColor="teal">Full calendar</ThemedText>
           </Pressable>
         </View>
-        {TODAY_SESSIONS.map((s) => (
-          <SessionSlot key={s.id} session={s} onPress={() => openPatient(s.id)} />
-        ))}
+        {todaySessions.length === 0 && (
+          <ThemedText themeColor="textTertiary" style={{ paddingHorizontal: Spacing.two, marginBottom: Spacing.two }}>
+            No sessions today.
+          </ThemedText>
+        )}
+        {todaySessions.map((s) => {
+          const { tag, tagColor } = getSessionTag(s.start_time);
+          return (
+            <SessionSlot
+              key={s.id}
+              session={{ id: (s.patient as any)?.id, time: formatTime(s.start_time), name: (s.patient as any)?.full_name ?? 'Patient', tag, tagColor }}
+              onPress={() => openPatient((s.patient as any)?.id)}
+            />
+          );
+        })}
 
         {/* Tomorrow */}
         <ThemedText style={[styles.secLabel, { marginTop: Spacing.two }]}>Tomorrow</ThemedText>
-        {TOMORROW_SESSIONS.map((s) => (
-          <SessionSlot key={s.id} session={s} onPress={() => openPatient(s.id)} />
-        ))}
+        {tomorrowSessions.length === 0 && (
+          <ThemedText themeColor="textTertiary" style={{ paddingHorizontal: Spacing.two, marginBottom: Spacing.two }}>
+            No sessions tomorrow.
+          </ThemedText>
+        )}
+        {tomorrowSessions.map((s) => {
+          const { tag, tagColor } = getSessionTag(s.start_time);
+          return (
+            <SessionSlot
+              key={s.id}
+              session={{ id: (s.patient as any)?.id, time: formatTime(s.start_time), name: (s.patient as any)?.full_name ?? 'Patient', tag, tagColor }}
+              onPress={() => openPatient((s.patient as any)?.id)}
+            />
+          );
+        })}
       </ScrollView>
     </ThemedView>
   );
@@ -135,9 +276,7 @@ function SessionSlot({ session, onPress }: { session: Session; onPress: () => vo
   return (
     <Pressable onPress={onPress}>
       <ThemedView type="backgroundElement" style={styles.slotItem}>
-        <ThemedText themeColor="gold" style={styles.slotTime}>
-          {session.time}
-        </ThemedText>
+        <ThemedText themeColor="gold" style={styles.slotTime}>{session.time}</ThemedText>
         <ThemedText style={styles.slotName}>{session.name}</ThemedText>
         <View style={[styles.tag, { backgroundColor: `${session.tagColor}2E` }]}>
           <ThemedText type="small" style={[styles.tagText, { color: session.tagColor }]}>
@@ -218,6 +357,12 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: 'rgba(255,255,255,0.85)',
+  },
+  noSession: {
+    borderRadius: 16,
+    padding: Spacing.three,
+    alignItems: 'center',
+    marginBottom: Spacing.three,
   },
   linkCard: {
     flexDirection: 'row',

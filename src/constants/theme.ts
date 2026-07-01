@@ -1,8 +1,6 @@
 import '@/global.css';
 import { Platform } from 'react-native';
 
-// MindBridge brand palette — fixed dark theme (from the HTML mockups).
-// `light` mirrors `dark` for now since no light mode has been designed.
 const brand = {
   text: '#EDE4D4',
   background: '#141F2E',
@@ -18,15 +16,16 @@ const brand = {
   tealDim: '#258F80',
   green: '#52C48A',
   rose: '#E07272',
+  error: '#E07272',
   purple: '#A07ED4',
   amber: '#E8A952',
- textOnAccent: '#FFFFFF',
-tealSoft: 'rgba(61,191,173,0.12)',
-overlay: 'rgba(0,0,0,0.5)',
-tabInactive: '#6A8898',
-tabActiveGlow: 'rgba(240,192,116,0.16)',
-tealDeep: '#1D6B8F',
-focusCardGlow: 'rgba(255,255,255,0.06)',
+  textOnAccent: '#FFFFFF',
+  tealSoft: 'rgba(61,191,173,0.12)',
+  overlay: 'rgba(0,0,0,0.5)',
+  tabInactive: '#6A8898',
+  tabActiveGlow: 'rgba(240,192,116,0.16)',
+  tealDeep: '#1D6B8F',
+  focusCardGlow: 'rgba(255,255,255,0.06)',
 } as const;
 
 export const Colors = {

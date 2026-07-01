@@ -1,4 +1,4 @@
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -6,23 +6,116 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useTheme } from '@/hooks/use-theme';
 import { Spacing, MaxContentWidth, MaxFormWidth } from '@/constants/theme';
+import { supabase } from '@/lib/supabase';
+
+const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+type DayEntry = { enabled: boolean; start: string; end: string };
+
+function to24Hour(timeStr: string): string {
+  const [time, period] = timeStr.split(' ');
+  let [hours, minutes] = time.split(':').map(Number);
+  if (period === 'PM' && hours !== 12) hours += 12;
+  if (period === 'AM' && hours === 12) hours = 0;
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00`;
+}
 
 export default function PsychAccountScreen() {
   const theme = useTheme();
+  const { schedule: scheduleParam } = useLocalSearchParams<{ schedule?: string }>();
+
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [license, setLicense] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
   const canSubmit =
-    fullName.trim() !== '' && email.trim() !== '' && password.trim() !== '' && license.trim() !== '';
+    fullName.trim() !== '' &&
+    email.trim() !== '' &&
+    password.trim() !== '' &&
+    license.trim() !== '' &&
+    !loading;
 
-  function handleSubmit() {
-    // TODO: once Supabase is wired up:
-    // 1. create the auth user (email/password)
-    // 2. insert a row into psychologist_profiles with specialties, mindspa info,
-    //    hours, license, and status: 'pending'
+  async function handleSubmit() {
+    setError('');
+    setLoading(true);
+
+    // 1. Create the auth user
+    const { data, error: signUpError } = await supabase.auth.signUp({
+      email: email.trim(),
+      password,
+      options: {
+        data: { role: 'psychologist' },
+      },
+    });
+
+    if (signUpError) {
+      setError(signUpError.message);
+      setLoading(false);
+      return;
+    }
+
+    const userId = data.user?.id;
+    if (!userId) {
+      setError('Signup failed. Please try again.');
+      setLoading(false);
+      return;
+    }
+
+    // 2. Update profiles row with full name
+    const { error: profileError } = await supabase
+      .from('profiles')
+      .update({ full_name: fullName.trim() })
+      .eq('id', userId);
+
+    if (profileError) {
+      setError('Account created but profile update failed. Please contact support.');
+      setLoading(false);
+      return;
+    }
+
+    // 3. Create psychologist_profiles row
+    const { error: psychError } = await supabase
+      .from('psychologist_profiles')
+      .insert({
+        id: userId,
+        license_number: license.trim(),
+        status: 'pending',
+      });
+
+    if (psychError) {
+      setError('Account created but psychologist profile failed. Please contact support.');
+      setLoading(false);
+      return;
+    }
+
+    // 4. Save availability from psych-hours screen
+    if (scheduleParam) {
+      try {
+        const schedule: Record<string, DayEntry> = JSON.parse(scheduleParam);
+
+        const availabilityRows = DAYS
+          .map((day, index) => ({ day, index, entry: schedule[day] }))
+          .filter(({ entry }) => entry?.enabled)
+          .map(({ index, entry }) => ({
+            psychologist_id: userId,
+            day_of_week: index,
+            start_time: to24Hour(entry.start),
+            end_time: to24Hour(entry.end),
+          }));
+
+        if (availabilityRows.length > 0) {
+          await supabase.from('availability').insert(availabilityRows);
+        }
+      } catch {
+        console.warn('Could not save availability during signup');
+      }
+    }
+
+    setLoading(false);
     router.replace('/psych-pending');
   }
 
@@ -90,20 +183,26 @@ export default function PsychAccountScreen() {
                   style={[styles.input, { color: theme.text }]}
                 />
               </ThemedView>
+
               <ThemedText type="small" themeColor="textTertiary">
                 We'll verify this during review.
               </ThemedText>
 
+              {error !== '' && (
+                <ThemedText type="small" themeColor="error">
+                  {error}
+                </ThemedText>
+              )}
+
               <Pressable
                 style={[
                   styles.primaryBtn,
-                  { backgroundColor: theme.teal },
-                  !canSubmit && styles.disabledBtn,
+                  { backgroundColor: canSubmit ? theme.teal : theme.border },
                 ]}
                 disabled={!canSubmit}
                 onPress={handleSubmit}>
                 <ThemedText type="smallBold" style={{ color: theme.textOnAccent }}>
-                  Submit for review
+                  {loading ? 'Submitting…' : 'Submit for review'}
                 </ThemedText>
               </Pressable>
             </ThemedView>
@@ -116,9 +215,20 @@ export default function PsychAccountScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, alignItems: 'center' },
-  safeArea: { flex: 1, width: '100%', maxWidth: MaxContentWidth, paddingHorizontal: Spacing.four, paddingTop: Spacing.three },
+  safeArea: {
+    flex: 1,
+    width: '100%',
+    maxWidth: MaxContentWidth,
+    paddingHorizontal: Spacing.four,
+    paddingTop: Spacing.three,
+  },
   formWrap: { flex: 1, width: '100%' },
-  scrollContent: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: Spacing.four },
+  scrollContent: {
+    flexGrow: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: Spacing.four,
+  },
   card: { width: '100%', maxWidth: MaxFormWidth, gap: Spacing.three },
   subtitle: { marginBottom: Spacing.two },
   inputWrap: {
@@ -136,5 +246,4 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: Spacing.two,
   },
-  disabledBtn: { opacity: 0.4 },
 });

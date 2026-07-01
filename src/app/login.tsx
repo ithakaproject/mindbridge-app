@@ -6,17 +6,52 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useTheme } from '@/hooks/use-theme';
 import { Spacing, MaxContentWidth, MaxFormWidth } from '@/constants/theme';
+import { supabase } from '@/lib/supabase';
 
 export default function LoginScreen() {
   const theme = useTheme();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
-  function handleLogin() {
-    // TODO: replace with real auth call once backend exists.
-    // For now this just routes into the app so we can test navigation.
-    router.replace('/(psych-tabs)');
+  async function handleLogin() {
+    setError('');
+    setLoading(true);
+
+    const { data, error: signInError } = await supabase.auth.signInWithPassword({
+      email: email.trim(),
+      password,
+    });
+
+    if (signInError) {
+      setError(signInError.message);
+      setLoading(false);
+      return;
+    }
+
+    const { data: profile, error: profileError } = await supabase
+      .from('profiles')
+      .select('role')
+      .eq('id', data.user.id)
+      .single();
+
+    if (profileError || !profile) {
+      setError('Could not load your profile. Please try again.');
+      setLoading(false);
+      return;
+    }
+
+    setLoading(false);
+
+    if (profile.role === 'psychologist') {
+      router.replace('/(psych-tabs)');
+    } else if (profile.role === 'patient') {
+      router.replace('/(patient-tabs)');
+    } else {
+      setError('Unrecognized role. Please contact support.');
+    }
   }
 
   return (
@@ -63,8 +98,19 @@ export default function LoginScreen() {
               </Pressable>
             </ThemedView>
 
-            <Pressable style={[styles.primaryBtn, { backgroundColor: theme.teal }]} onPress={handleLogin}>
-              <ThemedText type="smallBold" style={{ color: theme.textOnAccent }}>Log In</ThemedText>
+            {error !== '' && (
+              <ThemedText type="small" themeColor="error">
+                {error}
+              </ThemedText>
+            )}
+
+            <Pressable
+              style={[styles.primaryBtn, { backgroundColor: loading ? theme.border : theme.teal }]}
+              onPress={handleLogin}
+              disabled={loading}>
+              <ThemedText type="smallBold" style={{ color: theme.textOnAccent }}>
+                {loading ? 'Logging in…' : 'Log In'}
+              </ThemedText>
             </Pressable>
 
             <Pressable onPress={() => router.push('/role-select')} style={styles.linkRow}>

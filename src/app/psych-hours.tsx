@@ -46,8 +46,12 @@ export default function PsychHoursScreen() {
   }
 
   function handleContinue() {
-    // TODO: save `schedule` to Supabase once it's wired up
-    router.push('/psych-account');
+    // Pass the schedule as a JSON string to psych-account,
+    // where it will be saved to Supabase after the user is created.
+    router.push({
+      pathname: '/psych-account',
+      params: { schedule: JSON.stringify(schedule) },
+    });
   }
 
   return (
@@ -61,7 +65,7 @@ export default function PsychHoursScreen() {
           <ThemedView style={styles.card}>
             <ThemedText type="title">Set your hours</ThemedText>
             <ThemedText type="default" themeColor="textSecondary" style={styles.subtitle}>
-              Set your usual weekly availability. You'll be able to mark individual days off later from your calendar.
+              Set your usual weekly availability. You'll be able to adjust these anytime from your calendar.
             </ThemedText>
 
             {DAYS.map((day) => {
