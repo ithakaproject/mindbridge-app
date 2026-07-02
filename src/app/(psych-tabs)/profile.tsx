@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { View, Pressable, StyleSheet, ScrollView, ActivityIndicator, Alert } from 'react-native';
+import { View, Pressable, StyleSheet, ScrollView, ActivityIndicator } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import Ionicons from '@expo/vector-icons/Ionicons';
@@ -51,33 +51,28 @@ export default function ProfileScreen() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
 
-    // Fetch base profile
     const { data: baseProfile } = await supabase
       .from('profiles')
       .select('full_name')
       .eq('id', user.id)
       .single();
 
-    // Fetch psychologist profile
     const { data: psychProfile } = await supabase
       .from('psychologist_profiles')
       .select('specialties, bio')
       .eq('id', user.id)
       .single();
 
-    // Fetch patient count
     const { count: patientCount } = await supabase
       .from('patient_profiles')
       .select('*', { count: 'exact', head: true })
       .eq('psychologist_id', user.id);
 
-    // Fetch session count
     const { count: sessionCount } = await supabase
       .from('sessions')
       .select('*', { count: 'exact', head: true })
       .eq('psychologist_id', user.id);
 
-    // Fetch average rating
     const { data: reviews } = await supabase
       .from('reviews')
       .select('rating')
@@ -104,21 +99,8 @@ export default function ProfileScreen() {
   useFocusEffect(useCallback(() => { loadProfile(); }, []));
 
   async function handleLogout() {
-    Alert.alert(
-      'Log out',
-      'Are you sure you want to log out?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Log out',
-          style: 'destructive',
-          onPress: async () => {
-            await supabase.auth.signOut();
-            router.replace('/');
-          },
-        },
-      ]
-    );
+    await supabase.auth.signOut();
+    router.replace('/');
   }
 
   if (loading) {
