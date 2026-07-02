@@ -27,13 +27,16 @@ export default function PatientAccountScreen() {
     setError('');
     setLoading(true);
 
-    // 1. Create the auth user, passing role in metadata so the trigger
-    //    writes the correct role into the profiles table automatically.
+    // 1. Create the auth user — full_name and role passed in metadata
+    // so the trigger inserts them into profiles automatically.
     const { data, error: signUpError } = await supabase.auth.signUp({
       email: email.trim(),
       password,
       options: {
-        data: { role: 'patient' },
+        data: {
+          role: 'patient',
+          full_name: fullName.trim(),
+        },
       },
     });
 
@@ -50,21 +53,7 @@ export default function PatientAccountScreen() {
       return;
     }
 
-    // 2. Update the profiles row (created by the trigger) with full name.
-    const { error: profileError } = await supabase
-      .from('profiles')
-      .update({ full_name: fullName.trim() })
-      .eq('id', userId);
-
-    if (profileError) {
-      setError('Account created but profile update failed. Please contact support.');
-      setLoading(false);
-      return;
-    }
-
-    // 3. Create the patient_profiles row.
-    //    Quiz answers from earlier screens will be wired in later
-    //    when we tackle passing data between onboarding screens.
+    // 2. Create the patient_profiles row
     const { error: patientError } = await supabase
       .from('patient_profiles')
       .insert({ id: userId });

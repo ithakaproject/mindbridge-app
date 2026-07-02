@@ -85,6 +85,8 @@ export default function RootLayout() {
         <Stack.Screen name="(patient-tabs)" />
         <Stack.Screen name="patient/[id]" />
         <Stack.Screen name="chat/[id]" />
+        <Stack.Screen name="psych-edit-profile" />
+        <Stack.Screen name="psych-change-password" />
       </Stack>
     </ThemeProvider>
   );

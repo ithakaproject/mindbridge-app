@@ -1,6 +1,6 @@
-import { useState } from 'react';
-import { ScrollView, View, Pressable, StyleSheet } from 'react-native';
-import { router } from 'expo-router';
+import { useState, useCallback } from 'react';
+import { ScrollView, View, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
+import { router, useFocusEffect } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { ThemedText } from '@/components/themed-text';
@@ -9,11 +9,9 @@ import { TopBar } from '@/components/top-bar';
 import { OptionGrid } from '@/components/option-grid';
 import { Colors, BottomTabInset, Spacing, MaxContentWidth } from '@/constants/theme';
 import { POSITIVE_MOODS, NEGATIVE_MOODS, findMood } from '@/data/journal-options';
+import { supabase } from '@/lib/supabase';
 
 const colors = Colors.dark;
-
-// TODO (Supabase): replace with the authenticated patient's real name + greeting data
-const PATIENT_NAME = 'Alex Johnson';
 
 function getGreeting() {
   const hour = new Date().getHours();
@@ -22,106 +20,246 @@ function getGreeting() {
   return 'Good evening,';
 }
 
-// TODO (Supabase): replace with the patient's real check-in streak
-const MOOD_STREAK = 7;
+function formatSessionTime(isoString: string): string {
+  const d = new Date(isoString);
+  const now = new Date();
+  const isToday = d.toDateString() === now.toDateString();
+  const tomorrow = new Date(now);
+  tomorrow.setDate(now.getDate() + 1);
+  const isTomorrow = d.toDateString() === tomorrow.toDateString();
+  const timeStr = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  if (isToday) return `Today · ${timeStr}`;
+  if (isTomorrow) return `Tomorrow · ${timeStr}`;
+  return `${d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })} · ${timeStr}`;
+}
 
-// TODO (Supabase): replace with real counts once backend is connected
-const STATS = [
-  { label: 'Upcoming', value: '3' },
-  { label: 'Pending', value: '2' },
-  { label: 'Entries', value: '28' },
-];
+function getSessionTag(isoString: string): { tag: string; tagColor: TagColor } {
+  const now = new Date();
+  const start = new Date(isoString);
+  const diffMins = (start.getTime() - now.getTime()) / 60000;
+  if (diffMins < 0 && diffMins > -60) return { tag: 'Now', tagColor: 'rose' };
+  if (diffMins >= 0 && diffMins <= 120) return { tag: 'Soon', tagColor: 'amber' };
+  const isToday = start.toDateString() === now.toDateString();
+  if (isToday) return { tag: 'Today', tagColor: 'teal' };
+  return { tag: start.toLocaleDateString([], { weekday: 'short' }), tagColor: 'textTertiary' };
+}
 
 type TagColor = 'rose' | 'teal' | 'gold' | 'amber' | 'green' | 'textTertiary';
 
-const UPCOMING_SESSIONS: { title: string; sub: string; tag: string; tagColor: TagColor; onPress: () => void }[] = [
-  {
-    title: 'Dr. Anita Patel',
-    sub: 'Today · 3:00 PM · In 2 hrs',
-    tag: 'Now',
-    tagColor: 'rose',
-    onPress: () => router.push('/chat'),
-  },
-  {
-    title: 'Dr. Anita Patel',
-    sub: 'Thu May 29 · 10:00 AM',
-    tag: 'Thu',
-    tagColor: 'textTertiary',
-    onPress: () => router.push('/schedule'),
-  },
-];
+type SessionRow = {
+  id: string;
+  start_time: string;
+  duration: number;
+  meeting_link: string | null;
+  psychologist_name: string;
+};
 
-const ASSIGNMENTS: {
-  icon: keyof typeof Ionicons.glyphMap;
+type AssignmentRow = {
+  id: string;
   title: string;
   sub: string;
-  tag: string;
-  tagColor: TagColor;
-  desc: string;
-}[] = [
-  {
-    icon: 'clipboard-outline',
-    title: 'CBT Thought Record',
-    sub: 'Due today',
-    tag: 'Urgent',
-    tagColor: 'rose',
-    desc: 'Complete your automatic thoughts log. Identify the situation, your automatic thought, emotion, and a balanced alternative thought.',
-  },
-  {
-    icon: 'sparkles-outline',
-    title: 'Evening Mindfulness',
-    sub: 'Daily · 10 min',
-    tag: 'Daily',
-    tagColor: 'teal',
-    desc: 'A 10-minute guided breathing exercise. Best done 30 min before sleep. Focus on slow exhales — 4 counts in, 6 out.',
-  },
-  {
-    icon: 'pencil',
-    title: 'Week 3 Reflection',
-    sub: 'Due May 30',
-    tag: 'Soon',
-    tagColor: 'amber',
-    desc: 'Write a short reflection on patterns you noticed this week. What triggered anxiety? What coping strategies worked?',
-  },
-];
+  icon: 'clipboard-outline' | 'sparkles-outline' | 'pencil' | 'videocam-outline';
+  done: boolean;
+};
 
+// Courses are still placeholder — no courses table yet
 const COURSES = [
   {
     emoji: '❤️',
     title: 'Self Love',
     pct: 70,
     sub: 'Module 5 of 7 · 1 left this week',
-    desc: 'Building self-compassion practices for daily life. This module focuses on inner critic work.',
+    desc: 'Building self-compassion practices for daily life.',
   },
   {
     emoji: '🧠',
     title: 'Anxiety Management',
     pct: 35,
     sub: 'Module 3 of 8 · 2 new lessons',
-    desc: 'Understanding the cognitive model of anxiety and how thoughts drive feelings.',
+    desc: 'Understanding the cognitive model of anxiety.',
   },
 ];
 
 export default function PatientHomeScreen() {
+  const [patientName, setPatientName] = useState('');
+  const [nextSession, setNextSession] = useState<SessionRow | null>(null);
+  const [upcomingSessions, setUpcomingSessions] = useState<SessionRow[]>([]);
+  const [assignments, setAssignments] = useState<AssignmentRow[]>([]);
+  const [stats, setStats] = useState({ upcoming: 0, pending: 0, entries: 0 });
+  const [loading, setLoading] = useState(true);
   const [linkRevealed, setLinkRevealed] = useState(false);
-  // TODO (Supabase): persist today's mood check-in instead of local-only state
   const [todaysMood, setTodaysMood] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [valenceTab, setValenceTab] = useState<'positive' | 'negative'>('positive');
+  const [savingMood, setSavingMood] = useState(false);
+
+  async function loadData() {
+    setLoading(true);
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    // Fetch patient name
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('full_name')
+      .eq('id', user.id)
+      .single();
+    setPatientName(profile?.full_name ?? '');
+
+    // Fetch psychologist name via patient_profiles
+    const { data: patientProfile } = await supabase
+      .from('patient_profiles')
+      .select('psychologist_id')
+      .eq('id', user.id)
+      .single();
+
+    let psychName = 'Your psychologist';
+    if (patientProfile?.psychologist_id) {
+      const { data: psychProfile } = await supabase
+        .from('profiles')
+        .select('full_name')
+        .eq('id', patientProfile.psychologist_id)
+        .single();
+      if (psychProfile?.full_name) psychName = `Dr. ${psychProfile.full_name.split(' ').slice(-1)[0]}`;
+    }
+
+    // Fetch upcoming sessions
+    const now = new Date().toISOString();
+    const { data: sessData } = await supabase
+      .from('sessions')
+      .select('id, start_time, duration, meeting_link')
+      .eq('patient_id', user.id)
+      .gte('start_time', now)
+      .order('start_time')
+      .limit(5);
+
+    const sessions: SessionRow[] = (sessData ?? []).map((s) => ({
+      ...s,
+      psychologist_name: psychName,
+    }));
+
+    setNextSession(sessions[0] ?? null);
+    setUpcomingSessions(sessions.slice(0, 2));
+
+    // Fetch assignments
+    const { data: assignData } = await supabase
+      .from('assignments')
+      .select('id, title, sub, icon, done')
+      .eq('patient_id', user.id)
+      .eq('done', false)
+      .order('created_at');
+    setAssignments((assignData as AssignmentRow[]) ?? []);
+
+    // Fetch today's mood check-in
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const { data: moodData } = await supabase
+      .from('journal_entries')
+      .select('mood_label')
+      .eq('patient_id', user.id)
+      .gte('created_at', todayStart.toISOString())
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+    if (moodData?.mood_label) setTodaysMood(moodData.mood_label);
+
+    // Fetch stats
+    const { count: upcomingCount } = await supabase
+      .from('sessions')
+      .select('*', { count: 'exact', head: true })
+      .eq('patient_id', user.id)
+      .gte('start_time', now);
+
+    const { count: pendingCount } = await supabase
+      .from('assignments')
+      .select('*', { count: 'exact', head: true })
+      .eq('patient_id', user.id)
+      .eq('done', false);
+
+    const { count: entriesCount } = await supabase
+      .from('journal_entries')
+      .select('*', { count: 'exact', head: true })
+      .eq('patient_id', user.id);
+
+    setStats({
+      upcoming: upcomingCount ?? 0,
+      pending: pendingCount ?? 0,
+      entries: entriesCount ?? 0,
+    });
+
+    setLoading(false);
+  }
+
+  useFocusEffect(useCallback(() => { loadData(); }, []));
+
+  async function confirmMood(label: string) {
+    setTodaysMood(label);
+    setPickerOpen(false);
+    setSavingMood(true);
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    const moodInfo = findMood(label);
+    if (!moodInfo) return;
+
+    // Check if there's already a check-in today
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    const { data: existing } = await supabase
+      .from('journal_entries')
+      .select('id')
+      .eq('patient_id', user.id)
+      .gte('created_at', todayStart.toISOString())
+      .limit(1)
+      .single();
+
+    if (existing) {
+      // Update today's entry
+      await supabase
+        .from('journal_entries')
+        .update({
+          mood_label: moodInfo.label,
+          mood_valence: moodInfo.valence,
+          mood_score: moodInfo.score,
+        })
+        .eq('id', existing.id);
+    } else {
+      // Create new entry
+      await supabase
+        .from('journal_entries')
+        .insert({
+          patient_id: user.id,
+          mood_label: moodInfo.label,
+          mood_valence: moodInfo.valence,
+          mood_score: moodInfo.score,
+        });
+    }
+
+    setSavingMood(false);
+  }
 
   const moodInfo = todaysMood ? findMood(todaysMood) : undefined;
 
-  const confirmMood = (label: string) => {
-    setTodaysMood(label);
-    setPickerOpen(false);
-  };
-
-  const openAssignment = (item: { title: string; sub: string; tag: string; tagColor: TagColor; desc: string }) => {
+  const openAssignment = (item: AssignmentRow) => {
     router.push({
       pathname: '/assignment',
-      params: { title: item.title, desc: item.desc, sub: item.sub, tagColor: item.tagColor },
+      params: { title: item.title, desc: item.sub, sub: item.sub, tagColor: 'gold' },
     });
   };
+
+  if (loading) {
+    return (
+      <ThemedView style={styles.screen}>
+        <TopBar />
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+          <ActivityIndicator color={colors.teal} />
+        </View>
+      </ThemedView>
+    );
+  }
 
   return (
     <ThemedView style={styles.screen}>
@@ -129,54 +267,60 @@ export default function PatientHomeScreen() {
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={[styles.scrollContent, { paddingBottom: BottomTabInset + Spacing.four }]}>
+
         <View style={styles.greeting}>
-          <ThemedText type="small" themeColor="textSecondary">
-            {getGreeting()}
-          </ThemedText>
-          <ThemedText style={styles.greetingName}>{PATIENT_NAME}</ThemedText>
+          <ThemedText type="small" themeColor="textSecondary">{getGreeting()}</ThemedText>
+          <ThemedText style={styles.greetingName}>{patientName}</ThemedText>
         </View>
 
         {/* Focus card — next session */}
-        <Pressable onPress={() => setLinkRevealed((v) => !v)} style={styles.focusCard}>
-          <LinearGradient
-            colors={[colors.tealDeep, colors.tealDim]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.focusInner}>
-            <View style={styles.focusGlow} />
-            <ThemedText style={styles.focusEyebrow}>NEXT SESSION</ThemedText>
-            <ThemedText style={styles.focusTitle}>Dr. Anita Patel</ThemedText>
-            <ThemedText style={styles.focusSub}>Today · 3:00 – 3:50 PM · In 2 hours</ThemedText>
-          </LinearGradient>
-          <View style={styles.focusAction}>
-            <ThemedText style={styles.focusActionLabel}>
-              {linkRevealed ? 'Tap to hide meeting link' : 'Tap to reveal meeting link'}
-            </ThemedText>
-            <Ionicons name="videocam" size={16} color="rgba(255,255,255,0.7)" />
-          </View>
-        </Pressable>
-
-        {linkRevealed && (
-          <View style={styles.linkCard}>
-            <Ionicons name="videocam" size={18} color={colors.teal} />
-            <ThemedText style={styles.linkText}>meet.google.com/xyz-abcd-efg</ThemedText>
-            <Pressable style={styles.linkBtn}>
-              <ThemedText type="small" style={styles.linkBtnText}>
-                Join
-              </ThemedText>
+        {nextSession ? (
+          <>
+            <Pressable onPress={() => setLinkRevealed((v) => !v)} style={styles.focusCard}>
+              <LinearGradient
+                colors={[colors.tealDeep, colors.tealDim]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.focusInner}>
+                <View style={styles.focusGlow} />
+                <ThemedText style={styles.focusEyebrow}>NEXT SESSION</ThemedText>
+                <ThemedText style={styles.focusTitle}>{nextSession.psychologist_name}</ThemedText>
+                <ThemedText style={styles.focusSub}>
+                  {formatSessionTime(nextSession.start_time)} · {nextSession.duration} min
+                </ThemedText>
+              </LinearGradient>
+              <View style={styles.focusAction}>
+                <ThemedText style={styles.focusActionLabel}>
+                  {linkRevealed ? 'Tap to hide meeting link' : 'Tap to reveal meeting link'}
+                </ThemedText>
+                <Ionicons name="videocam" size={16} color="rgba(255,255,255,0.7)" />
+              </View>
             </Pressable>
-          </View>
+
+            {linkRevealed && nextSession.meeting_link && (
+              <View style={styles.linkCard}>
+                <Ionicons name="videocam" size={18} color={colors.teal} />
+                <ThemedText style={styles.linkText}>{nextSession.meeting_link}</ThemedText>
+                <Pressable style={styles.linkBtn}>
+                  <ThemedText type="small" style={styles.linkBtnText}>Join</ThemedText>
+                </Pressable>
+              </View>
+            )}
+          </>
+        ) : (
+          <ThemedView type="backgroundElement" style={styles.noSession}>
+            <ThemedText themeColor="textSecondary">No upcoming sessions scheduled.</ThemedText>
+          </ThemedView>
         )}
 
         {/* Mood check-in */}
         <View style={styles.moodCard}>
           <View style={styles.moodTop}>
             <ThemedText style={styles.moodLabel}>HOW ARE YOU FEELING?</ThemedText>
-            <ThemedText type="small" style={styles.moodStreak}>
-              🔥 {MOOD_STREAK} day streak
-            </ThemedText>
+            {savingMood && (
+              <ThemedText type="small" themeColor="textTertiary">Saving…</ThemedText>
+            )}
           </View>
-
           {!pickerOpen && (
             <Pressable onPress={() => setPickerOpen(true)} style={styles.moodSummaryRow}>
               {moodInfo ? (
@@ -194,23 +338,20 @@ export default function PatientHomeScreen() {
               )}
             </Pressable>
           )}
-
           {pickerOpen && (
             <>
               <View style={styles.valenceTabs}>
                 <Pressable
                   onPress={() => setValenceTab('positive')}
                   style={[styles.valenceTab, valenceTab === 'positive' && styles.valenceTabOnPositive]}>
-                  <ThemedText
-                    style={[styles.valenceTabText, valenceTab === 'positive' && styles.valenceTabTextOn]}>
+                  <ThemedText style={[styles.valenceTabText, valenceTab === 'positive' && styles.valenceTabTextOn]}>
                     Positive
                   </ThemedText>
                 </Pressable>
                 <Pressable
                   onPress={() => setValenceTab('negative')}
                   style={[styles.valenceTab, valenceTab === 'negative' && styles.valenceTabOnNegative]}>
-                  <ThemedText
-                    style={[styles.valenceTabText, valenceTab === 'negative' && styles.valenceTabTextOn]}>
+                  <ThemedText style={[styles.valenceTabText, valenceTab === 'negative' && styles.valenceTabTextOn]}>
                     Negative
                   </ThemedText>
                 </Pressable>
@@ -222,9 +363,7 @@ export default function PatientHomeScreen() {
                 accentColor={valenceTab === 'positive' ? colors.green : colors.rose}
               />
               <Pressable onPress={() => setPickerOpen(false)} style={styles.moodCancelBtn}>
-                <ThemedText type="small" themeColor="textTertiary">
-                  Cancel
-                </ThemedText>
+                <ThemedText type="small" themeColor="textTertiary">Cancel</ThemedText>
               </Pressable>
             </>
           )}
@@ -232,11 +371,13 @@ export default function PatientHomeScreen() {
 
         {/* Stat strip */}
         <View style={styles.statStrip}>
-          {STATS.map((stat) => (
+          {[
+            { label: 'Upcoming', value: String(stats.upcoming) },
+            { label: 'Pending', value: String(stats.pending) },
+            { label: 'Entries', value: String(stats.entries) },
+          ].map((stat) => (
             <ThemedView key={stat.label} type="backgroundElement" style={styles.statCard}>
-              <ThemedText themeColor="gold" style={styles.statNum}>
-                {stat.value}
-              </ThemedText>
+              <ThemedText themeColor="gold" style={styles.statNum}>{stat.value}</ThemedText>
               <ThemedText type="small" themeColor="textTertiary" style={styles.statLabel}>
                 {stat.label}
               </ThemedText>
@@ -247,86 +388,88 @@ export default function PatientHomeScreen() {
         {/* Upcoming sessions */}
         <View style={styles.secLabelRow}>
           <ThemedText style={styles.secMain}>Upcoming sessions</ThemedText>
-          <Pressable onPress={() => router.push('/schedule')}>
-            <ThemedText type="small" themeColor="teal">
-              See all
-            </ThemedText>
+          <Pressable onPress={() => router.push('/(patient-tabs)/schedule')}>
+            <ThemedText type="small" themeColor="teal">See all</ThemedText>
           </Pressable>
         </View>
-        {UPCOMING_SESSIONS.map((s, i) => (
-          <Pressable key={i} onPress={s.onPress}>
-            <ThemedView type="backgroundElement" style={styles.rowItem}>
-              <View style={[styles.riWrap, { backgroundColor: `${colors.teal}26` }]}>
-                <Ionicons name="person" size={19} color={colors.teal} />
-              </View>
-              <View style={styles.rowInfo}>
-                <ThemedText style={styles.rowTitle}>{s.title}</ThemedText>
-                <ThemedText type="small" themeColor="textSecondary" style={styles.rowSub}>
-                  {s.sub}
-                </ThemedText>
-              </View>
-              <View style={[styles.tag, { backgroundColor: `${colors[s.tagColor]}2E` }]}>
-                <ThemedText style={[styles.tagText, { color: colors[s.tagColor] }]}>{s.tag}</ThemedText>
-              </View>
-            </ThemedView>
-          </Pressable>
-        ))}
+        {upcomingSessions.length === 0 ? (
+          <ThemedText themeColor="textTertiary" style={styles.emptyText}>
+            No upcoming sessions.
+          </ThemedText>
+        ) : (
+          upcomingSessions.map((s) => {
+            const { tag, tagColor } = getSessionTag(s.start_time);
+            return (
+              <Pressable key={s.id} onPress={() => router.push('/(patient-tabs)/schedule')}>
+                <ThemedView type="backgroundElement" style={styles.rowItem}>
+                  <View style={[styles.riWrap, { backgroundColor: `${colors.teal}26` }]}>
+                    <Ionicons name="person" size={19} color={colors.teal} />
+                  </View>
+                  <View style={styles.rowInfo}>
+                    <ThemedText style={styles.rowTitle}>{s.psychologist_name}</ThemedText>
+                    <ThemedText type="small" themeColor="textSecondary" style={styles.rowSub}>
+                      {formatSessionTime(s.start_time)}
+                    </ThemedText>
+                  </View>
+                  <View style={[styles.tag, { backgroundColor: `${colors[tagColor]}2E` }]}>
+                    <ThemedText style={[styles.tagText, { color: colors[tagColor] }]}>{tag}</ThemedText>
+                  </View>
+                </ThemedView>
+              </Pressable>
+            );
+          })
+        )}
 
         {/* Assignments */}
         <View style={[styles.secLabelRow, { marginTop: 4 }]}>
           <ThemedText style={styles.secMain}>Assignments</ThemedText>
-          <View style={styles.dueBadge}>
-            <ThemedText style={styles.dueBadgeText}>2 due</ThemedText>
-          </View>
+          {stats.pending > 0 && (
+            <View style={styles.dueBadge}>
+              <ThemedText style={styles.dueBadgeText}>{stats.pending} due</ThemedText>
+            </View>
+          )}
         </View>
-        {ASSIGNMENTS.map((a, i) => (
-          <Pressable key={i} onPress={() => openAssignment(a)}>
-            <ThemedView type="backgroundElement" style={styles.rowItem}>
-              <View style={[styles.riWrap, { backgroundColor: `${colors.gold}26` }]}>
-                <Ionicons name={a.icon} size={19} color={colors.gold} />
-              </View>
-              <View style={styles.rowInfo}>
-                <ThemedText style={styles.rowTitle}>{a.title}</ThemedText>
-                <ThemedText type="small" themeColor="textSecondary" style={styles.rowSub}>
-                  {a.sub}
-                </ThemedText>
-              </View>
-              <View style={[styles.tag, { backgroundColor: `${colors[a.tagColor]}2E` }]}>
-                <ThemedText style={[styles.tagText, { color: colors[a.tagColor] }]}>{a.tag}</ThemedText>
-              </View>
-            </ThemedView>
-          </Pressable>
-        ))}
+        {assignments.length === 0 ? (
+          <ThemedText themeColor="textTertiary" style={styles.emptyText}>
+            No pending assignments.
+          </ThemedText>
+        ) : (
+          assignments.map((a) => (
+            <Pressable key={a.id} onPress={() => openAssignment(a)}>
+              <ThemedView type="backgroundElement" style={styles.rowItem}>
+                <View style={[styles.riWrap, { backgroundColor: `${colors.gold}26` }]}>
+                  <Ionicons name={a.icon ?? 'clipboard-outline'} size={19} color={colors.gold} />
+                </View>
+                <View style={styles.rowInfo}>
+                  <ThemedText style={styles.rowTitle}>{a.title}</ThemedText>
+                  <ThemedText type="small" themeColor="textSecondary" style={styles.rowSub}>
+                    {a.sub}
+                  </ThemedText>
+                </View>
+              </ThemedView>
+            </Pressable>
+          ))
+        )}
 
-        {/* Courses */}
+        {/* Courses — placeholder until courses table exists */}
         <View style={styles.secLabelRow}>
           <ThemedText style={styles.secMain}>Your courses</ThemedText>
-          <ThemedText type="small" themeColor="teal">
-            Browse
-          </ThemedText>
+          <ThemedText type="small" themeColor="teal">Browse</ThemedText>
         </View>
         {COURSES.map((c, i) => (
-          <Pressable
-            key={i}
-            onPress={() =>
-              openAssignment({ title: c.title, sub: c.sub, tag: '', tagColor: 'gold', desc: c.desc })
-            }>
-            <View style={styles.progItem}>
-              <View style={styles.progHeader}>
-                <ThemedText style={styles.progIcon}>{c.emoji}</ThemedText>
-                <ThemedText style={styles.progTitle}>{c.title}</ThemedText>
-                <ThemedText themeColor="gold" style={styles.progPct}>
-                  {c.pct}%
-                </ThemedText>
-              </View>
-              <View style={styles.progBar}>
-                <View style={[styles.progFill, { width: `${c.pct}%` }]} />
-              </View>
-              <ThemedText type="small" themeColor="textTertiary" style={styles.progSub}>
-                {c.sub}
-              </ThemedText>
+          <View key={i} style={styles.progItem}>
+            <View style={styles.progHeader}>
+              <ThemedText style={styles.progIcon}>{c.emoji}</ThemedText>
+              <ThemedText style={styles.progTitle}>{c.title}</ThemedText>
+              <ThemedText themeColor="gold" style={styles.progPct}>{c.pct}%</ThemedText>
             </View>
-          </Pressable>
+            <View style={styles.progBar}>
+              <View style={[styles.progFill, { width: `${c.pct}%` }]} />
+            </View>
+            <ThemedText type="small" themeColor="textTertiary" style={styles.progSub}>
+              {c.sub}
+            </ThemedText>
+          </View>
         ))}
       </ScrollView>
     </ThemedView>
@@ -347,288 +490,90 @@ const styles = StyleSheet.create({
     paddingTop: Spacing.half,
     paddingBottom: Spacing.three,
   },
-  greetingName: {
-    fontSize: 22,
-    fontWeight: '800',
-    letterSpacing: -0.5,
-    color: colors.text,
-  },
-  focusCard: {
-    borderRadius: 22,
-    overflow: 'hidden',
-    marginBottom: Spacing.three,
-  },
-  focusInner: {
-    paddingVertical: 15,
-    paddingHorizontal: 18,
-    overflow: 'hidden',
-  },
+  greetingName: { fontSize: 22, fontWeight: '800', letterSpacing: -0.5, color: colors.text },
+  focusCard: { borderRadius: 22, overflow: 'hidden', marginBottom: Spacing.three },
+  focusInner: { paddingVertical: 15, paddingHorizontal: 18, overflow: 'hidden' },
   focusGlow: {
-    position: 'absolute',
-    right: -30,
-    top: -30,
-    width: 110,
-    height: 110,
-    borderRadius: 55,
+    position: 'absolute', right: -30, top: -30,
+    width: 110, height: 110, borderRadius: 55,
     backgroundColor: colors.focusCardGlow,
   },
   focusEyebrow: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: 'rgba(255,255,255,0.6)',
-    textTransform: 'uppercase',
-    letterSpacing: 1.2,
-    marginBottom: 5,
+    fontSize: 10, fontWeight: '700', color: 'rgba(255,255,255,0.6)',
+    textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 5,
   },
-  focusTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#fff',
-    marginBottom: 2,
-  },
-  focusSub: {
-    fontSize: 12,
-    color: 'rgba(255,255,255,0.75)',
-  },
+  focusTitle: { fontSize: 16, fontWeight: '700', color: '#fff', marginBottom: 2 },
+  focusSub: { fontSize: 12, color: 'rgba(255,255,255,0.75)' },
   focusAction: {
-    backgroundColor: 'rgba(0,0,0,0.2)',
-    paddingVertical: 9,
-    paddingHorizontal: 18,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    backgroundColor: 'rgba(0,0,0,0.2)', paddingVertical: 9, paddingHorizontal: 18,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
   },
-  focusActionLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: 'rgba(255,255,255,0.85)',
-  },
+  focusActionLabel: { fontSize: 12, fontWeight: '600', color: 'rgba(255,255,255,0.85)' },
+  noSession: { borderRadius: 16, padding: Spacing.three, alignItems: 'center', marginBottom: Spacing.three },
   linkCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    backgroundColor: colors.backgroundSelected,
-    borderRadius: 14,
-    paddingVertical: 11,
-    paddingHorizontal: 16,
-    borderWidth: 0.5,
-    borderColor: colors.tealDim,
-    marginBottom: Spacing.three,
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: colors.backgroundSelected, borderRadius: 14,
+    paddingVertical: 11, paddingHorizontal: 16,
+    borderWidth: 0.5, borderColor: colors.tealDim, marginBottom: Spacing.three,
   },
-  linkText: {
-    flex: 1,
-    fontSize: 13,
-    color: colors.text,
-  },
-  linkBtn: {
-    backgroundColor: colors.teal,
-    borderRadius: 10,
-    paddingVertical: 6,
-    paddingHorizontal: 14,
-  },
-  linkBtnText: {
-    color: '#fff',
-    fontWeight: '600',
-  },
+  linkText: { flex: 1, fontSize: 13, color: colors.text },
+  linkBtn: { backgroundColor: colors.teal, borderRadius: 10, paddingVertical: 6, paddingHorizontal: 14 },
+  linkBtnText: { color: '#fff', fontWeight: '600' },
   moodCard: {
-    backgroundColor: colors.backgroundElement,
-    borderRadius: 18,
-    padding: 14,
-    marginBottom: Spacing.three,
-    borderWidth: 0.5,
-    borderColor: colors.border,
+    backgroundColor: colors.backgroundElement, borderRadius: 18,
+    padding: 14, marginBottom: Spacing.three,
+    borderWidth: 0.5, borderColor: colors.border,
   },
-  moodTop: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 10,
-  },
-  moodLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: colors.textSecondary,
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-  },
-  moodStreak: {
-    color: colors.amber,
-    fontWeight: '600',
-  },
-  moodSummaryRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  moodSummaryEmoji: {
-    fontSize: 30,
-  },
-  moodSummaryLabel: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.text,
-  },
-  moodCheckInPrompt: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: colors.gold,
-  },
-  valenceTabs: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 10,
-  },
-  valenceTab: {
-    paddingVertical: 6,
-    paddingHorizontal: 16,
-    borderRadius: 20,
-    backgroundColor: colors.backgroundSelected,
-  },
-  valenceTabOnPositive: {
-    backgroundColor: colors.green,
-  },
-  valenceTabOnNegative: {
-    backgroundColor: colors.rose,
-  },
-  valenceTabText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.textTertiary,
-  },
-  valenceTabTextOn: {
-    color: '#fff',
-    fontWeight: '700',
-  },
-  moodCancelBtn: {
-    alignItems: 'center',
-    paddingTop: 8,
-  },
-  statStrip: {
-    flexDirection: 'row',
-    gap: Spacing.two,
-    marginBottom: Spacing.three,
-  },
+  moodTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
+  moodLabel: { fontSize: 12, fontWeight: '700', color: colors.textSecondary, textTransform: 'uppercase', letterSpacing: 0.8 },
+  moodSummaryRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  moodSummaryEmoji: { fontSize: 30 },
+  moodSummaryLabel: { fontSize: 15, fontWeight: '700', color: colors.text },
+  moodCheckInPrompt: { fontSize: 13, fontWeight: '600', color: colors.gold },
+  valenceTabs: { flexDirection: 'row', gap: 8, marginBottom: 10 },
+  valenceTab: { paddingVertical: 6, paddingHorizontal: 16, borderRadius: 20, backgroundColor: colors.backgroundSelected },
+  valenceTabOnPositive: { backgroundColor: colors.green },
+  valenceTabOnNegative: { backgroundColor: colors.rose },
+  valenceTabText: { fontSize: 12, fontWeight: '600', color: colors.textTertiary },
+  valenceTabTextOn: { color: '#fff', fontWeight: '700' },
+  moodCancelBtn: { alignItems: 'center', paddingTop: 8 },
+  statStrip: { flexDirection: 'row', gap: Spacing.two, marginBottom: Spacing.three },
   statCard: {
-    flex: 1,
-    borderRadius: 14,
-    paddingVertical: 11,
-    paddingHorizontal: 6,
-    alignItems: 'center',
-    borderWidth: 0.5,
-    borderColor: colors.border,
+    flex: 1, borderRadius: 14, paddingVertical: 11, paddingHorizontal: 6,
+    alignItems: 'center', borderWidth: 0.5, borderColor: colors.border,
   },
-  statNum: {
-    fontSize: 19,
-    fontWeight: '800',
-    letterSpacing: -0.5,
-  },
-  statLabel: {
-    marginTop: 2,
-    fontWeight: '500',
-  },
+  statNum: { fontSize: 19, fontWeight: '800', letterSpacing: -0.5 },
+  statLabel: { marginTop: 2, fontWeight: '500' },
   secLabelRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing.two,
-    paddingBottom: Spacing.two,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: Spacing.two, paddingBottom: Spacing.two,
   },
-  secMain: {
-    fontSize: 10.5,
-    fontWeight: '700',
-    color: colors.textTertiary,
-    textTransform: 'uppercase',
-    letterSpacing: 1.1,
-  },
-  dueBadge: {
-    backgroundColor: colors.rose,
-    borderRadius: 10,
-    paddingVertical: 2,
-    paddingHorizontal: 8,
-  },
-  dueBadgeText: {
-    color: '#fff',
-    fontSize: 10,
-    fontWeight: '700',
-  },
+  secMain: { fontSize: 10.5, fontWeight: '700', color: colors.textTertiary, textTransform: 'uppercase', letterSpacing: 1.1 },
+  dueBadge: { backgroundColor: colors.rose, borderRadius: 10, paddingVertical: 2, paddingHorizontal: 8 },
+  dueBadgeText: { color: '#fff', fontSize: 10, fontWeight: '700' },
+  emptyText: { paddingHorizontal: Spacing.two, marginBottom: Spacing.two },
   rowItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingVertical: 11,
-    paddingHorizontal: 15,
-    borderRadius: 16,
-    marginBottom: 7,
-    borderWidth: 0.5,
-    borderColor: colors.border,
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    paddingVertical: 11, paddingHorizontal: 15,
+    borderRadius: 16, marginBottom: 7,
+    borderWidth: 0.5, borderColor: colors.border,
   },
-  riWrap: {
-    width: 36,
-    height: 36,
-    borderRadius: 11,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  rowInfo: {
-    flex: 1,
-    minWidth: 0,
-  },
-  rowTitle: {
-    fontSize: 13.5,
-    fontWeight: '600',
-    color: colors.text,
-  },
-  rowSub: {
-    marginTop: 2,
-  },
-  tag: {
-    paddingVertical: 3,
-    paddingHorizontal: 9,
-    borderRadius: 10,
-  },
-  tagText: {
-    fontSize: 10.5,
-    fontWeight: '700',
-  },
+  riWrap: { width: 36, height: 36, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
+  rowInfo: { flex: 1, minWidth: 0 },
+  rowTitle: { fontSize: 13.5, fontWeight: '600', color: colors.text },
+  rowSub: { marginTop: 2 },
+  tag: { paddingVertical: 3, paddingHorizontal: 9, borderRadius: 10 },
+  tagText: { fontSize: 10.5, fontWeight: '700' },
   progItem: {
-    backgroundColor: colors.backgroundElement,
-    borderRadius: 16,
-    padding: 14,
-    marginBottom: 7,
-    borderWidth: 0.5,
-    borderColor: colors.border,
+    backgroundColor: colors.backgroundElement, borderRadius: 16,
+    padding: 14, marginBottom: 7,
+    borderWidth: 0.5, borderColor: colors.border,
   },
-  progHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    marginBottom: 9,
-  },
-  progIcon: {
-    fontSize: 17,
-  },
-  progTitle: {
-    fontSize: 13.5,
-    fontWeight: '600',
-    color: colors.text,
-    flex: 1,
-  },
-  progPct: {
-    fontSize: 12.5,
-    fontWeight: '700',
-  },
-  progBar: {
-    height: 4,
-    backgroundColor: 'rgba(255,255,255,0.07)',
-    borderRadius: 2,
-    overflow: 'hidden',
-  },
-  progFill: {
-    height: '100%',
-    backgroundColor: colors.gold,
-    borderRadius: 2,
-  },
-  progSub: {
-    marginTop: 6,
-  },
+  progHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 9 },
+  progIcon: { fontSize: 17 },
+  progTitle: { fontSize: 13.5, fontWeight: '600', color: colors.text, flex: 1 },
+  progPct: { fontSize: 12.5, fontWeight: '700' },
+  progBar: { height: 4, backgroundColor: 'rgba(255,255,255,0.07)', borderRadius: 2, overflow: 'hidden' },
+  progFill: { height: '100%', backgroundColor: colors.gold, borderRadius: 2 },
+  progSub: { marginTop: 6 },
 });

@@ -25,6 +25,9 @@ export default function LoginScreen() {
       password,
     });
 
+    console.log('LOGIN DATA:', JSON.stringify(data?.user?.id));
+    console.log('LOGIN ERROR:', JSON.stringify(signInError));
+
     if (signInError) {
       setError(signInError.message);
       setLoading(false);
@@ -36,6 +39,9 @@ export default function LoginScreen() {
       .select('role')
       .eq('id', data.user.id)
       .single();
+
+    console.log('PROFILE DATA:', JSON.stringify(profile));
+    console.log('PROFILE ERROR:', JSON.stringify(profileError));
 
     if (profileError || !profile) {
       setError('Could not load your profile. Please try again.');

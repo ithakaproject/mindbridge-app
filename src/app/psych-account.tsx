@@ -43,14 +43,19 @@ export default function PsychAccountScreen() {
     setError('');
     setLoading(true);
 
-    // 1. Create the auth user
     const { data, error: signUpError } = await supabase.auth.signUp({
       email: email.trim(),
       password,
       options: {
-        data: { role: 'psychologist' },
+        data: {
+          role: 'psychologist',
+          full_name: fullName.trim(),
+        },
       },
     });
+
+    console.log('SIGNUP DATA:', JSON.stringify(data));
+    console.log('SIGNUP ERROR:', JSON.stringify(signUpError));
 
     if (signUpError) {
       setError(signUpError.message);
@@ -65,19 +70,6 @@ export default function PsychAccountScreen() {
       return;
     }
 
-    // 2. Update profiles row with full name
-    const { error: profileError } = await supabase
-      .from('profiles')
-      .update({ full_name: fullName.trim() })
-      .eq('id', userId);
-
-    if (profileError) {
-      setError('Account created but profile update failed. Please contact support.');
-      setLoading(false);
-      return;
-    }
-
-    // 3. Create psychologist_profiles row
     const { error: psychError } = await supabase
       .from('psychologist_profiles')
       .insert({
@@ -86,13 +78,14 @@ export default function PsychAccountScreen() {
         status: 'pending',
       });
 
+    console.log('PSYCH PROFILE ERROR:', JSON.stringify(psychError));
+
     if (psychError) {
       setError('Account created but psychologist profile failed. Please contact support.');
       setLoading(false);
       return;
     }
 
-    // 4. Save availability from psych-hours screen
     if (scheduleParam) {
       try {
         const schedule: Record<string, DayEntry> = JSON.parse(scheduleParam);
