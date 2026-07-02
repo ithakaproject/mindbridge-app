@@ -1,6 +1,6 @@
-import { useState } from 'react';
-import { ScrollView, View, Pressable, TextInput, StyleSheet } from 'react-native';
-import { useLocalSearchParams, router } from 'expo-router';
+import { useState, useEffect, useCallback } from 'react';
+import { ScrollView, View, Pressable, TextInput, StyleSheet, ActivityIndicator } from 'react-native';
+import { useLocalSearchParams, router, useFocusEffect } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -10,16 +10,20 @@ import { SuccessModal } from '@/components/success-modal';
 import { JournalRequestModal } from '@/components/journal-request-modal';
 import { ToggleSwitch } from '@/components/toggle-switch';
 import { Colors, Spacing, MaxContentWidth, BottomTabInset } from '@/constants/theme';
-import { PATIENTS, FLAGS, type Assignment } from '@/data/patients';
 import { REFLECTION_QUESTIONS } from '@/data/journal-options';
+import { supabase } from '@/lib/supabase';
 
 const colors = Colors.dark;
 
-const ASSIGN_ICONS: Record<Assignment['icon'], keyof typeof Ionicons.glyphMap> = {
-  clipboard: 'clipboard-outline',
-  brain: 'sparkles-outline',
-  forms: 'document-text-outline',
-  video: 'videocam-outline',
+const FLAG_COLORS: Record<string, 'green' | 'amber' | 'rose'> = {
+  progress: 'green',
+  watch: 'amber',
+  urgent: 'rose',
+};
+const FLAG_LABELS: Record<string, string> = {
+  progress: 'Progress',
+  watch: 'Monitor',
+  urgent: 'Urgent',
 };
 
 function moodBarColor(v: number) {
@@ -28,26 +32,255 @@ function moodBarColor(v: number) {
   return colors.green;
 }
 
-export default function PatientProfileScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
-  const patient = id ? PATIENTS[id] : undefined;
+function formatSessionTime(isoString: string): string {
+  const d = new Date(isoString);
+  const now = new Date();
+  const isToday = d.toDateString() === now.toDateString();
+  const timeStr = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  if (isToday) return `Today · ${timeStr}`;
+  return `${d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })} · ${timeStr}`;
+}
+
+type PatientData = {
+  id: string;
+  full_name: string;
+  flag: string;
+  notes: string | null;
+  journal_access: boolean;
+};
+
+type AssignmentRow = {
+  id: string;
+  title: string;
+  sub: string;
+  icon: string;
+  done: boolean;
+};
+
+type MoodEntry = {
+  mood_score: number;
+  created_at: string;
+};
+
+type NextSession = {
+  id: string;
+  start_time: string;
+  meeting_link: string | null;
+};
+
+type AssignedQuestion = { question_key: string };
+type CustomQuestion = { id: string; question: string };
+
+export default function PatientDetailScreen() {
+  const { id: patientId } = useLocalSearchParams<{ id: string }>();
+  const [patient, setPatient] = useState<PatientData | null>(null);
+  const [assignments, setAssignments] = useState<AssignmentRow[]>([]);
+  const [moodScores, setMoodScores] = useState<number[]>([]);
+  const [nextSession, setNextSession] = useState<NextSession | null>(null);
+  const [assignedQuestions, setAssignedQuestions] = useState<string[]>([]);
+  const [customQuestions, setCustomQuestions] = useState<CustomQuestion[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [psychId, setPsychId] = useState<string | null>(null);
 
   const [linkRevealed, setLinkRevealed] = useState(false);
-
   const [notesModalOpen, setNotesModalOpen] = useState(false);
   const [draftNote, setDraftNote] = useState('');
-  // TODO (Supabase): persist notes/assignments/journal questions to the patient's
-  // record instead of local-only state
-  const [savedNotes, setSavedNotes] = useState(patient?.notes ?? '');
-  const [assignments, setAssignments] = useState(patient?.assignments ?? []);
-
-  const [assignedQuestions, setAssignedQuestions] = useState(patient?.assignedJournalQuestions ?? []);
-  const [customQuestions, setCustomQuestions] = useState(patient?.customJournalQuestions ?? []);
-  const [newCustomQuestion, setNewCustomQuestion] = useState('');
-
   const [assignModalOpen, setAssignModalOpen] = useState(false);
   const [journalModalOpen, setJournalModalOpen] = useState(false);
+  const [newCustomQuestion, setNewCustomQuestion] = useState('');
   const [successInfo, setSuccessInfo] = useState<{ icon: string; title: string; subtitle: string } | null>(null);
+
+  async function loadData() {
+    setLoading(true);
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user || !patientId) return;
+    setPsychId(user.id);
+
+    // Fetch patient profile + patient_profiles
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('full_name')
+      .eq('id', patientId)
+      .single();
+
+    const { data: patientProfile } = await supabase
+      .from('patient_profiles')
+      .select('flag, notes, journal_access')
+      .eq('id', patientId)
+      .single();
+
+    setPatient({
+      id: patientId,
+      full_name: profile?.full_name ?? 'Patient',
+      flag: patientProfile?.flag ?? 'progress',
+      notes: patientProfile?.notes ?? null,
+      journal_access: patientProfile?.journal_access ?? false,
+    });
+
+    // Fetch assignments
+    const { data: assignData } = await supabase
+      .from('assignments')
+      .select('id, title, sub, icon, done')
+      .eq('patient_id', patientId)
+      .order('created_at', { ascending: false });
+    setAssignments((assignData as AssignmentRow[]) ?? []);
+
+    // Fetch mood scores
+    const { data: moodData } = await supabase
+      .from('journal_entries')
+      .select('mood_score, created_at')
+      .eq('patient_id', patientId)
+      .not('mood_score', 'is', null)
+      .order('created_at', { ascending: false })
+      .limit(8);
+    setMoodScores(
+      ((moodData as MoodEntry[]) ?? [])
+        .reverse()
+        .map((e) => e.mood_score)
+    );
+
+    // Fetch next session
+    const now = new Date().toISOString();
+    const { data: sessData } = await supabase
+      .from('sessions')
+      .select('id, start_time, meeting_link')
+      .eq('patient_id', patientId)
+      .eq('psychologist_id', user.id)
+      .gte('start_time', now)
+      .order('start_time')
+      .limit(1)
+      .single();
+    setNextSession((sessData as NextSession) ?? null);
+
+    // Fetch assigned journal questions
+    const { data: assignedQData } = await supabase
+      .from('assigned_journal_questions')
+      .select('question_key')
+      .eq('patient_id', patientId);
+    setAssignedQuestions((assignedQData as AssignedQuestion[])?.map((q) => q.question_key) ?? []);
+
+    // Fetch custom journal questions
+    const { data: customQData } = await supabase
+      .from('custom_journal_questions')
+      .select('id, question')
+      .eq('patient_id', patientId);
+    setCustomQuestions((customQData as CustomQuestion[]) ?? []);
+
+    setLoading(false);
+  }
+
+  useFocusEffect(useCallback(() => { loadData(); }, [patientId]));
+
+  const goToChat = () => router.push({ pathname: '/chat/[id]', params: { id: patientId } });
+
+  const goToJournal = () => {
+    if (!patient?.journal_access) {
+      setJournalModalOpen(true);
+      return;
+    }
+    console.log('open journal viewer for', patientId);
+  };
+
+  async function handleAssignSend(template: AssignmentTemplate) {
+    if (!patientId || !psychId) return;
+
+    const { data: newAssign } = await supabase
+      .from('assignments')
+      .insert({
+        patient_id: patientId,
+        psychologist_id: psychId,
+        title: template.title,
+        sub: 'Assigned today',
+        icon: template.icon ?? 'clipboard',
+        done: false,
+      })
+      .select()
+      .single();
+
+    if (newAssign) {
+      setAssignments((prev) => [newAssign as AssignmentRow, ...prev]);
+    }
+
+    setAssignModalOpen(false);
+    setSuccessInfo({
+      icon: '📋',
+      title: 'Assignment sent',
+      subtitle: `${template.title} has been sent to ${patient?.full_name?.split(' ')[0]}.`,
+    });
+  }
+
+  async function saveNotes() {
+    if (!patientId) return;
+
+    await supabase
+      .from('patient_profiles')
+      .update({ notes: draftNote.trim() })
+      .eq('id', patientId);
+
+    setPatient((prev) => prev ? { ...prev, notes: draftNote.trim() } : prev);
+    setNotesModalOpen(false);
+    setSuccessInfo({ icon: '📝', title: 'Notes saved', subtitle: 'Your session notes have been saved privately.' });
+  }
+
+  async function toggleQuestion(key: string) {
+    if (!patientId) return;
+    const isOn = assignedQuestions.includes(key);
+
+    if (isOn) {
+      await supabase
+        .from('assigned_journal_questions')
+        .delete()
+        .eq('patient_id', patientId)
+        .eq('question_key', key);
+      setAssignedQuestions((prev) => prev.filter((k) => k !== key));
+    } else {
+      await supabase
+        .from('assigned_journal_questions')
+        .insert({ patient_id: patientId, question_key: key });
+      setAssignedQuestions((prev) => [...prev, key]);
+    }
+  }
+
+  async function addCustomQuestion() {
+    const text = newCustomQuestion.trim();
+    if (!text || !patientId) return;
+
+    const { data: newQ } = await supabase
+      .from('custom_journal_questions')
+      .insert({ patient_id: patientId, question: text })
+      .select()
+      .single();
+
+    if (newQ) {
+      setCustomQuestions((prev) => [...prev, newQ as CustomQuestion]);
+    }
+    setNewCustomQuestion('');
+  }
+
+  async function removeCustomQuestion(id: string) {
+    await supabase.from('custom_journal_questions').delete().eq('id', id);
+    setCustomQuestions((prev) => prev.filter((q) => q.id !== id));
+  }
+
+  const handleJournalRequestSent = (period: string) => {
+    console.log('journal access requested for', period);
+  };
+
+  if (loading) {
+    return (
+      <ThemedView style={styles.screen}>
+        <View style={styles.header}>
+          <Pressable onPress={() => router.back()} hitSlop={12}>
+            <Ionicons name="chevron-back" size={24} color={colors.gold} />
+          </Pressable>
+        </View>
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+          <ActivityIndicator color={colors.teal} />
+        </View>
+      </ThemedView>
+    );
+  }
 
   if (!patient) {
     return (
@@ -64,84 +297,32 @@ export default function PatientProfileScreen() {
     );
   }
 
-  const flag = FLAGS[patient.flag];
-  const lastMood = patient.mood[patient.mood.length - 1];
-  const prevMood = patient.mood[patient.mood.length - 2];
-  const trendUp = lastMood >= prevMood;
+  const flagColor = colors[FLAG_COLORS[patient.flag] ?? 'green'];
+  const flagLabel = FLAG_LABELS[patient.flag] ?? 'Progress';
+  const firstName = patient.full_name.split(' ')[0];
+  const initials = patient.full_name
+    .split(' ')
+    .map((n) => n[0])
+    .join('')
+    .toUpperCase()
+    .slice(0, 2);
 
-  const goToChat = () => router.push({ pathname: '/chat/[id]', params: { id: patient.id } });
-
-  const goToJournal = () => {
-    if (!patient.journalAccess) {
-      setJournalModalOpen(true);
-      return;
-    }
-    // TODO: build the full Journal viewer screen (entries list + detail) in a later step
-    console.log('open journal viewer for', patient.id);
-  };
-
-  const openAssignModal = () => setAssignModalOpen(true);
-
-  const handleAssignSend = (template: AssignmentTemplate) => {
-    setAssignments((prev) => [
-      { title: template.title, sub: 'Assigned today', done: false, icon: template.icon },
-      ...prev,
-    ]);
-    setAssignModalOpen(false);
-    setSuccessInfo({
-      icon: '📋',
-      title: 'Assignment sent',
-      subtitle: `${template.title} has been sent to ${patient.name}.`,
-    });
-  };
-
-  const handleJournalRequestSent = (period: string) => {
-    console.log('journal access requested for', period);
-  };
-
-  const openNotesModal = () => {
-    setDraftNote(savedNotes);
-    setNotesModalOpen(true);
-  };
-  const saveNotes = () => {
-    setSavedNotes(draftNote.trim());
-    setNotesModalOpen(false);
-    setSuccessInfo({ icon: '📝', title: 'Notes saved', subtitle: 'Your session notes have been saved privately.' });
-  };
-
-  // TODO (Supabase): persist this per-patient instead of local-only state
-  const toggleQuestion = (key: string) => {
-    setAssignedQuestions((prev) =>
-      prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key],
-    );
-  };
-  const addCustomQuestion = () => {
-    const text = newCustomQuestion.trim();
-    if (!text) return;
-    setCustomQuestions((prev) => [...prev, { id: `custom-${Date.now()}`, question: text }]);
-    setNewCustomQuestion('');
-  };
-  const removeCustomQuestion = (id: string) => {
-    setCustomQuestions((prev) => prev.filter((q) => q.id !== id));
-  };
-
-  const goToSchedule = () => router.push('/calendar');
+  const trendUp = moodScores.length >= 2
+    ? moodScores[moodScores.length - 1] >= moodScores[moodScores.length - 2]
+    : true;
 
   return (
     <ThemedView style={styles.screen}>
-      {/* Header */}
       <View style={styles.header}>
         <Pressable onPress={() => router.back()} hitSlop={12} style={styles.backBtn}>
           <Ionicons name="chevron-back" size={24} color={colors.gold} />
         </Pressable>
         <View style={styles.headerTitleWrap}>
-          <ThemedText style={styles.headerTitle}>{patient.name}</ThemedText>
-          <ThemedText type="small" style={styles.headerStatus}>
-            {patient.online ? '🟢 Online' : '⚫ Offline'}
-          </ThemedText>
+          <ThemedText style={styles.headerTitle}>{patient.full_name}</ThemedText>
+          <ThemedText type="small" style={styles.headerStatus}>Patient</ThemedText>
         </View>
-        <View style={[styles.flagBadge, { backgroundColor: `${colors[flag.color]}2E` }]}>
-          <ThemedText style={[styles.flagText, { color: colors[flag.color] }]}>{flag.label}</ThemedText>
+        <View style={[styles.flagBadge, { backgroundColor: `${flagColor}2E` }]}>
+          <ThemedText style={[styles.flagText, { color: flagColor }]}>{flagLabel}</ThemedText>
         </View>
         <Pressable onPress={goToChat} hitSlop={12} style={{ marginLeft: 10 }}>
           <Ionicons name="videocam" size={20} color={colors.gold} />
@@ -151,57 +332,61 @@ export default function PatientProfileScreen() {
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={[styles.scrollContent, { paddingBottom: BottomTabInset + Spacing.four }]}>
+
         {/* Patient banner */}
         <View style={styles.banner}>
-          <View style={[styles.avatarLg, { backgroundColor: patient.color }]}>
-            <ThemedText style={styles.avatarLgText}>{patient.initials}</ThemedText>
+          <View style={[styles.avatarLg, { backgroundColor: colors.tealDim }]}>
+            <ThemedText style={styles.avatarLgText}>{initials}</ThemedText>
           </View>
           <View style={{ flex: 1 }}>
-            <ThemedText style={styles.bannerName}>{patient.name}</ThemedText>
-            <ThemedText type="small" themeColor="textSecondary" style={styles.bannerSince}>
-              {patient.since}
-            </ThemedText>
+            <ThemedText style={styles.bannerName}>{patient.full_name}</ThemedText>
             <ThemedText type="small" themeColor="textTertiary" style={styles.bannerSpec}>
-              {patient.spec}
+              {patient.flag === 'urgent' ? 'Needs immediate attention' : patient.flag === 'watch' ? 'Monitor closely' : 'Making good progress'}
             </ThemedText>
           </View>
         </View>
 
         {/* Next session */}
-        <Pressable onPress={() => setLinkRevealed((v) => !v)} style={styles.sessBanner}>
-          <Ionicons name="calendar-outline" size={17} color={colors.teal} />
-          <View style={{ flex: 1 }}>
-            <ThemedText style={styles.sessTitle}>Next: {patient.nextSess}</ThemedText>
-            <ThemedText type="small" themeColor="teal" style={styles.sessHint}>
-              Tap to reveal meeting link
-            </ThemedText>
-          </View>
-          <View style={[styles.tag, { backgroundColor: `${colors.rose}2E` }]}>
-            <ThemedText style={[styles.tagText, { color: colors.rose }]}>{patient.sessTag}</ThemedText>
-          </View>
-        </Pressable>
-
-        {linkRevealed && (
-          <View style={styles.linkCard}>
-            <Ionicons name="videocam" size={17} color={colors.teal} />
-            <ThemedText style={styles.linkText}>meet.google.com/xyz-abcd-efg</ThemedText>
-            <Pressable style={styles.linkBtn}>
-              <ThemedText type="small" style={styles.linkBtnText}>
-                Start
-              </ThemedText>
+        {nextSession ? (
+          <>
+            <Pressable onPress={() => setLinkRevealed((v) => !v)} style={styles.sessBanner}>
+              <Ionicons name="calendar-outline" size={17} color={colors.teal} />
+              <View style={{ flex: 1 }}>
+                <ThemedText style={styles.sessTitle}>
+                  Next: {formatSessionTime(nextSession.start_time)}
+                </ThemedText>
+                <ThemedText type="small" themeColor="teal" style={styles.sessHint}>
+                  Tap to reveal meeting link
+                </ThemedText>
+              </View>
             </Pressable>
+
+            {linkRevealed && nextSession.meeting_link && (
+              <View style={styles.linkCard}>
+                <Ionicons name="videocam" size={17} color={colors.teal} />
+                <ThemedText style={styles.linkText}>{nextSession.meeting_link}</ThemedText>
+                <Pressable style={styles.linkBtn}>
+                  <ThemedText type="small" style={styles.linkBtnText}>Start</ThemedText>
+                </Pressable>
+              </View>
+            )}
+          </>
+        ) : (
+          <View style={styles.sessBanner}>
+            <Ionicons name="calendar-outline" size={17} color={colors.textTertiary} />
+            <ThemedText type="small" themeColor="textTertiary">No upcoming sessions scheduled.</ThemedText>
           </View>
         )}
 
         {/* Session notes */}
         <View style={styles.notesBox}>
-          <ThemedText style={styles.notesLabel}>LAST SESSION NOTES</ThemedText>
-          <ThemedText style={styles.notesText}>{savedNotes || 'No notes added yet for this patient.'}</ThemedText>
-          <Pressable onPress={openNotesModal} style={styles.notesAdd}>
+          <ThemedText style={styles.notesLabel}>SESSION NOTES</ThemedText>
+          <ThemedText style={styles.notesText}>
+            {patient.notes || 'No notes added yet for this patient.'}
+          </ThemedText>
+          <Pressable onPress={() => { setDraftNote(patient.notes ?? ''); setNotesModalOpen(true); }} style={styles.notesAdd}>
             <Ionicons name="pencil" size={12} color={colors.teal} />
-            <ThemedText type="small" themeColor="teal" style={{ fontWeight: '600' }}>
-              {' '}Add note
-            </ThemedText>
+            <ThemedText type="small" themeColor="teal" style={{ fontWeight: '600' }}> Edit notes</ThemedText>
           </Pressable>
         </View>
 
@@ -210,71 +395,57 @@ export default function PatientProfileScreen() {
           <QuickAction icon="chatbubble-outline" label="Message" color={colors.teal} onPress={goToChat} />
           <QuickAction
             icon="book-outline"
-            label={patient.journalAccess ? 'Journal' : 'Request'}
+            label={patient.journal_access ? 'Journal' : 'Request'}
             color={colors.purple}
             onPress={goToJournal}
           />
-          <QuickAction icon="clipboard-outline" label="Assign" color={colors.gold} onPress={openAssignModal} />
-          <QuickAction icon="calendar-outline" label="Schedule" color={colors.green} onPress={goToSchedule} />
+          <QuickAction icon="clipboard-outline" label="Assign" color={colors.gold} onPress={() => setAssignModalOpen(true)} />
+          <QuickAction icon="calendar-outline" label="Schedule" color={colors.green} onPress={() => router.push('/(psych-tabs)/calendar')} />
         </View>
 
         {/* Mood sparkline */}
-        <View style={styles.moodCard}>
-          <View style={styles.moodHeader}>
-            <ThemedText style={styles.moodLabel}>MOOD TREND — LAST {patient.mood.length} ENTRIES</ThemedText>
-            <ThemedText type="small" style={[styles.moodTrend, { color: trendUp ? colors.green : colors.rose }]}>
-              {trendUp ? '↑ Improving' : '↓ Declining'}
-            </ThemedText>
+        {moodScores.length > 0 && (
+          <View style={styles.moodCard}>
+            <View style={styles.moodHeader}>
+              <ThemedText style={styles.moodLabel}>MOOD TREND — LAST {moodScores.length} ENTRIES</ThemedText>
+              <ThemedText type="small" style={[styles.moodTrend, { color: trendUp ? colors.green : colors.rose }]}>
+                {trendUp ? '↑ Improving' : '↓ Declining'}
+              </ThemedText>
+            </View>
+            <View style={styles.sparkline}>
+              {moodScores.map((v, i) => (
+                <View
+                  key={i}
+                  style={[styles.sparkBar, { height: `${(v / 10) * 100}%`, backgroundColor: moodBarColor(v) }]}
+                />
+              ))}
+            </View>
           </View>
-          <View style={styles.sparkline}>
-            {patient.mood.map((v, i) => (
-              <View
-                key={i}
-                style={[styles.sparkBar, { height: `${(v / 10) * 100}%`, backgroundColor: moodBarColor(v) }]}
-              />
-            ))}
-          </View>
-          <View style={styles.sparkLabels}>
-            <ThemedText type="small" themeColor="textTertiary" style={styles.sparkLbl}>
-              Aug 1
-            </ThemedText>
-            <ThemedText type="small" themeColor="textTertiary" style={styles.sparkLbl}>
-              Aug 25
-            </ThemedText>
-          </View>
-        </View>
+        )}
 
         {/* Assignments */}
         <View style={styles.secLabelRow}>
           <ThemedText style={styles.secMain}>Assignments</ThemedText>
-          <Pressable onPress={openAssignModal}>
-            <ThemedText type="small" themeColor="teal">
-              + New
-            </ThemedText>
+          <Pressable onPress={() => setAssignModalOpen(true)}>
+            <ThemedText type="small" themeColor="teal">+ New</ThemedText>
           </Pressable>
         </View>
         {assignments.length === 0 ? (
           <ThemedText type="small" themeColor="textTertiary" style={{ paddingVertical: 4 }}>
             No assignments yet.{' '}
-            <ThemedText type="small" themeColor="teal" onPress={openAssignModal} style={{ fontWeight: '600' }}>
+            <ThemedText type="small" themeColor="teal" onPress={() => setAssignModalOpen(true)} style={{ fontWeight: '600' }}>
               Assign one →
             </ThemedText>
           </ThemedText>
         ) : (
-          assignments.map((a, i) => (
-            <View key={i} style={styles.assignRow}>
-              <View
-                style={[
-                  styles.assignIcon,
-                  { backgroundColor: a.done ? `${colors.green}26` : `${colors.gold}1F` },
-                ]}>
-                <Ionicons name={ASSIGN_ICONS[a.icon]} size={16} color={a.done ? colors.green : colors.gold} />
+          assignments.map((a) => (
+            <View key={a.id} style={styles.assignRow}>
+              <View style={[styles.assignIcon, { backgroundColor: a.done ? `${colors.green}26` : `${colors.gold}1F` }]}>
+                <Ionicons name="clipboard-outline" size={16} color={a.done ? colors.green : colors.gold} />
               </View>
               <View style={{ flex: 1 }}>
                 <ThemedText style={styles.assignTitle}>{a.title}</ThemedText>
-                <ThemedText type="small" themeColor="textSecondary" style={styles.assignSub}>
-                  {a.sub}
-                </ThemedText>
+                <ThemedText type="small" themeColor="textSecondary" style={styles.assignSub}>{a.sub}</ThemedText>
               </View>
               <View style={[styles.pill, { backgroundColor: a.done ? `${colors.green}2E` : `${colors.gold}26` }]}>
                 <ThemedText style={[styles.pillText, { color: a.done ? colors.green : colors.gold }]}>
@@ -288,15 +459,13 @@ export default function PatientProfileScreen() {
         {/* Journal questions */}
         <ThemedText style={[styles.secLabel, { marginTop: 4 }]}>Journal questions</ThemedText>
         <ThemedText type="small" themeColor="textSecondary" style={{ marginBottom: 10 }}>
-          Choose which reflection prompts appear in {patient.name.split(' ')[0]}'s journal.
+          Choose which reflection prompts appear in {firstName}'s journal.
         </ThemedText>
         {REFLECTION_QUESTIONS.map((q) => {
           const isOn = assignedQuestions.includes(q.key);
           return (
             <View key={q.key} style={styles.questionRow}>
-              <ThemedText style={styles.questionText} numberOfLines={2}>
-                {q.question}
-              </ThemedText>
+              <ThemedText style={styles.questionText} numberOfLines={2}>{q.question}</ThemedText>
               <ToggleSwitch value={isOn} onValueChange={() => toggleQuestion(q.key)} size="small" />
             </View>
           );
@@ -304,9 +473,7 @@ export default function PatientProfileScreen() {
 
         {customQuestions.map((q) => (
           <View key={q.id} style={styles.questionRow}>
-            <ThemedText style={styles.questionText} numberOfLines={2}>
-              {q.question}
-            </ThemedText>
+            <ThemedText style={styles.questionText} numberOfLines={2}>{q.question}</ThemedText>
             <Pressable onPress={() => removeCustomQuestion(q.id)} hitSlop={8}>
               <Ionicons name="close-circle" size={18} color={colors.rose} />
             </Pressable>
@@ -366,10 +533,7 @@ export default function PatientProfileScreen() {
 }
 
 function QuickAction({
-  icon,
-  label,
-  color,
-  onPress,
+  icon, label, color, onPress,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
@@ -389,152 +553,95 @@ function QuickAction({
 const styles = StyleSheet.create({
   screen: { flex: 1 },
   header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: Spacing.three,
-    paddingTop: 13,
-    paddingBottom: 10,
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: Spacing.three, paddingTop: 13, paddingBottom: 10,
     backgroundColor: colors.backgroundElement,
-    borderBottomWidth: 0.5,
-    borderBottomColor: colors.border,
+    borderBottomWidth: 0.5, borderBottomColor: colors.border,
   },
   backBtn: { marginRight: 10 },
   headerTitleWrap: { flex: 1 },
-  headerTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    letterSpacing: -0.2,
-    color: colors.text,
-  },
-  headerStatus: { color: colors.green, marginTop: 1 },
+  headerTitle: { fontSize: 15, fontWeight: '700', letterSpacing: -0.2, color: colors.text },
+  headerStatus: { color: colors.textSecondary, marginTop: 1 },
   flagBadge: { paddingVertical: 3, paddingHorizontal: 9, borderRadius: 8 },
   flagText: { fontSize: 11, fontWeight: '700' },
   notFound: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   scroll: { flex: 1 },
   scrollContent: {
-    alignSelf: 'center',
-    width: '100%',
-    maxWidth: MaxContentWidth,
-    paddingHorizontal: Spacing.three,
-    paddingTop: Spacing.three,
+    alignSelf: 'center', width: '100%', maxWidth: MaxContentWidth,
+    paddingHorizontal: Spacing.three, paddingTop: Spacing.three,
   },
   banner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
+    flexDirection: 'row', alignItems: 'center', gap: 14,
     backgroundColor: colors.backgroundSelected,
-    borderRadius: 20,
-    padding: 15,
-    marginBottom: 10,
-    borderWidth: 0.5,
-    borderColor: colors.border,
+    borderRadius: 20, padding: 15, marginBottom: 10,
+    borderWidth: 0.5, borderColor: colors.border,
   },
   avatarLg: { width: 54, height: 54, borderRadius: 27, alignItems: 'center', justifyContent: 'center' },
   avatarLgText: { fontSize: 17, fontWeight: '700', color: '#fff' },
   bannerName: { fontSize: 15, fontWeight: '700', letterSpacing: -0.2, color: colors.text },
-  bannerSince: { marginTop: 3 },
   bannerSpec: { marginTop: 2 },
   sessBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
+    flexDirection: 'row', alignItems: 'center', gap: 10,
     backgroundColor: `${colors.teal}14`,
-    borderWidth: 0.5,
-    borderColor: `${colors.teal}33`,
-    borderRadius: 14,
-    paddingVertical: 11,
-    paddingHorizontal: 14,
-    marginBottom: 10,
+    borderWidth: 0.5, borderColor: `${colors.teal}33`,
+    borderRadius: 14, paddingVertical: 11, paddingHorizontal: 14, marginBottom: 10,
   },
   sessTitle: { fontSize: 13, fontWeight: '600', color: colors.text },
   sessHint: { marginTop: 2 },
-  tag: { paddingVertical: 3, paddingHorizontal: 9, borderRadius: 10 },
-  tagText: { fontSize: 10.5, fontWeight: '700' },
   linkCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
+    flexDirection: 'row', alignItems: 'center', gap: 10,
     backgroundColor: colors.backgroundSelected,
-    borderRadius: 14,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    marginBottom: 10,
+    borderRadius: 14, paddingVertical: 10, paddingHorizontal: 14, marginBottom: 10,
   },
   linkText: { flex: 1, fontSize: 13, color: colors.text },
   linkBtn: { backgroundColor: colors.teal, borderRadius: 10, paddingVertical: 6, paddingHorizontal: 14 },
   linkBtnText: { color: '#fff', fontWeight: '600' },
   notesBox: {
     backgroundColor: colors.backgroundElement,
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 10,
-    borderWidth: 0.5,
-    borderColor: colors.border,
+    borderRadius: 14, padding: 14, marginBottom: 10,
+    borderWidth: 0.5, borderColor: colors.border,
   },
   notesLabel: { fontSize: 10, fontWeight: '700', color: colors.textTertiary, letterSpacing: 0.9, marginBottom: 7 },
   notesText: { fontSize: 12.5, color: colors.textSecondary, lineHeight: 20, fontStyle: 'italic' },
   notesAdd: { flexDirection: 'row', alignItems: 'center', marginTop: 8 },
   notesInput: {
     backgroundColor: colors.backgroundSelected,
-    borderWidth: 0.5,
-    borderColor: colors.border,
-    borderRadius: 12,
-    padding: 13,
-    fontSize: 13,
-    color: colors.text,
-    fontStyle: 'italic',
-    minHeight: 110,
-    textAlignVertical: 'top',
-    marginBottom: 8,
+    borderWidth: 0.5, borderColor: colors.border,
+    borderRadius: 12, padding: 13, fontSize: 13, color: colors.text,
+    fontStyle: 'italic', minHeight: 110, textAlignVertical: 'top', marginBottom: 8,
   },
   quickActions: { flexDirection: 'row', gap: 7, marginBottom: 10 },
   qaBtn: {
-    flex: 1,
-    alignItems: 'center',
-    gap: 5,
+    flex: 1, alignItems: 'center', gap: 5,
     backgroundColor: colors.backgroundElement,
-    borderRadius: 14,
-    paddingVertical: 11,
-    paddingHorizontal: 6,
-    borderWidth: 0.5,
-    borderColor: colors.border,
+    borderRadius: 14, paddingVertical: 11, paddingHorizontal: 6,
+    borderWidth: 0.5, borderColor: colors.border,
   },
   qaIcon: { width: 34, height: 34, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
   qaLabel: { fontSize: 10.5, fontWeight: '600' },
   moodCard: {
     backgroundColor: colors.backgroundElement,
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 10,
-    borderWidth: 0.5,
-    borderColor: colors.border,
+    borderRadius: 14, padding: 14, marginBottom: 10,
+    borderWidth: 0.5, borderColor: colors.border,
   },
   moodHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
   moodLabel: { fontSize: 10, fontWeight: '700', color: colors.textTertiary, letterSpacing: 0.9 },
   moodTrend: { fontWeight: '600' },
   sparkline: { flexDirection: 'row', alignItems: 'flex-end', gap: 4, height: 32 },
   sparkBar: { flex: 1, borderRadius: 4, minHeight: 4 },
-  sparkLabels: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 5 },
-  sparkLbl: { fontSize: 9 },
-  secLabelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingBottom: 8, marginTop: 4 },
+  secLabelRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingBottom: 8, marginTop: 4,
+  },
   secLabel: {
-    fontSize: 10.5,
-    fontWeight: '700',
-    color: colors.textTertiary,
-    textTransform: 'uppercase',
-    letterSpacing: 1.1,
-    paddingBottom: 8,
+    fontSize: 10.5, fontWeight: '700', color: colors.textTertiary,
+    textTransform: 'uppercase', letterSpacing: 1.1, paddingBottom: 8,
   },
   secMain: { fontSize: 10.5, fontWeight: '700', color: colors.textTertiary, textTransform: 'uppercase', letterSpacing: 1.1 },
   assignRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
+    flexDirection: 'row', alignItems: 'center', gap: 10,
     backgroundColor: colors.backgroundSelected,
-    borderRadius: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 13,
-    marginBottom: 7,
+    borderRadius: 12, paddingVertical: 10, paddingHorizontal: 13, marginBottom: 7,
   },
   assignIcon: { width: 30, height: 30, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
   assignTitle: { fontSize: 13, fontWeight: '600', color: colors.text },
@@ -542,43 +649,21 @@ const styles = StyleSheet.create({
   pill: { paddingVertical: 2, paddingHorizontal: 7, borderRadius: 6 },
   pillText: { fontSize: 10, fontWeight: '700' },
   questionRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
+    flexDirection: 'row', alignItems: 'center', gap: 10,
     backgroundColor: colors.backgroundSelected,
-    borderRadius: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 13,
-    marginBottom: 7,
+    borderRadius: 12, paddingVertical: 10, paddingHorizontal: 13, marginBottom: 7,
   },
-  questionText: {
-    flex: 1,
-    fontSize: 12.5,
-    color: colors.text,
-    lineHeight: 17,
-  },
-  addQuestionRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 4,
-  },
+  questionText: { flex: 1, fontSize: 12.5, color: colors.text, lineHeight: 17 },
+  addQuestionRow: { flexDirection: 'row', gap: 8, marginTop: 4 },
   addQuestionInput: {
-    flex: 1,
-    backgroundColor: colors.backgroundSelected,
-    borderWidth: 0.5,
-    borderColor: colors.border,
-    borderRadius: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 13,
-    fontSize: 13,
-    color: colors.text,
+    flex: 1, backgroundColor: colors.backgroundSelected,
+    borderWidth: 0.5, borderColor: colors.border,
+    borderRadius: 12, paddingVertical: 10, paddingHorizontal: 13,
+    fontSize: 13, color: colors.text,
   },
   addQuestionBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
+    width: 38, height: 38, borderRadius: 12,
     backgroundColor: colors.gold,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: 'center', justifyContent: 'center',
   },
 });

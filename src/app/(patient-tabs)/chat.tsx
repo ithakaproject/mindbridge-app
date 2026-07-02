@@ -1,15 +1,12 @@
-import { useState } from 'react';
-import { ScrollView, View, Pressable, TextInput, StyleSheet } from 'react-native';
-import { router } from 'expo-router';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { ScrollView, View, Pressable, TextInput, StyleSheet, ActivityIndicator } from 'react-native';
+import { router, useFocusEffect } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { ThemedText } from '@/components/themed-text';
 import { Colors, Spacing, MaxContentWidth } from '@/constants/theme';
-import { PATIENTS, type ChatMessage } from '@/data/patients';
+import { supabase } from '@/lib/supabase';
 
 const colors = Colors.dark;
-
-// TODO (Supabase + auth): look up the logged-in patient instead of hardcoding "aj"
-const CURRENT_PATIENT = PATIENTS.aj;
 
 const AI_PROMPTS = [
   { emoji: '😟', label: 'Feeling anxious', text: "I'm feeling anxious right now" },
@@ -19,68 +16,166 @@ const AI_PROMPTS = [
 
 type AiMessage = { from: 'ai' | 'me'; text: string };
 
+type ChatMessage = {
+  id: string;
+  sender: 'patient' | 'psychologist';
+  body: string;
+  created_at: string;
+};
+
 export default function PatientChatScreen() {
   const [pane, setPane] = useState<'psych' | 'ai'>('psych');
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
 
-  // Psych pane state
-  const [psychMessages, setPsychMessages] = useState<ChatMessage[]>(CURRENT_PATIENT.msgs);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [psychDraft, setPsychDraft] = useState('');
+  const [psychName, setPsychName] = useState('Your Psychologist');
+  const [psychInitials, setPsychInitials] = useState('DR');
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [patientId, setPatientId] = useState<string | null>(null);
 
-  // AI pane state
   const [aiMessages, setAiMessages] = useState<AiMessage[]>([
     {
       from: 'ai',
-      text: "Hi Alex 👋 I'm your AI support companion. I'm here to listen, help you reflect, or just chat. How are you feeling right now?",
+      text: "Hi 👋 I'm your AI support companion. I'm here to listen, help you reflect, or just chat. How are you feeling right now?",
     },
   ]);
   const [aiDraft, setAiDraft] = useState('');
   const [showPrompts, setShowPrompts] = useState(true);
 
-  const sendPsychMessage = () => {
+  const scrollRef = useRef<ScrollView>(null);
+
+  async function loadChat() {
+    setLoading(true);
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+    setPatientId(user.id);
+
+    // Get psychologist info
+    const { data: patientProfile } = await supabase
+      .from('patient_profiles')
+      .select('psychologist_id')
+      .eq('id', user.id)
+      .single();
+
+    if (!patientProfile?.psychologist_id) {
+      setLoading(false);
+      return;
+    }
+
+    const { data: psychProfile } = await supabase
+      .from('profiles')
+      .select('full_name')
+      .eq('id', patientProfile.psychologist_id)
+      .single();
+
+    if (psychProfile?.full_name) {
+      const lastName = psychProfile.full_name.split(' ').slice(-1)[0];
+      setPsychName(`Dr. ${lastName}`);
+      setPsychInitials(
+        psychProfile.full_name
+          .split(' ')
+          .map((n: string) => n[0])
+          .join('')
+          .toUpperCase()
+          .slice(0, 2)
+      );
+    }
+
+    // Get or create a chat session between patient and psychologist
+    const { data: existingSession } = await supabase
+      .from('sessions')
+      .select('id')
+      .eq('patient_id', user.id)
+      .eq('psychologist_id', patientProfile.psychologist_id)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    const chatSessionId = existingSession?.id ?? null;
+    setSessionId(chatSessionId);
+
+    if (chatSessionId) {
+      const { data: msgData } = await supabase
+        .from('chat_messages')
+        .select('id, sender, body, created_at')
+        .eq('session_id', chatSessionId)
+        .order('created_at');
+      setMessages((msgData as ChatMessage[]) ?? []);
+    }
+
+    setLoading(false);
+  }
+
+  useFocusEffect(useCallback(() => { loadChat(); }, []));
+
+  async function sendPsychMessage() {
     const text = psychDraft.trim();
-    if (!text) return;
-    setPsychMessages((prev) => [...prev, { f: 'me', t: text }]);
+    if (!text || !sessionId || !patientId || sending) return;
+    setSending(true);
     setPsychDraft('');
-  };
 
-  const startAssignment = () => {
-    router.push({
-      pathname: '/assignment',
-      params: {
-        title: 'CBT Thought Record',
-        desc: 'Complete your automatic thoughts log for this week.',
-        sub: 'Due today',
-        tagColor: 'rose',
-      },
-    });
-  };
+    const { data: newMsg } = await supabase
+      .from('chat_messages')
+      .insert({
+        session_id: sessionId,
+        sender: 'patient',
+        body: text,
+        patient_id: patientId,
+      })
+      .select()
+      .single();
 
-  // TODO (Supabase + backend): replace this local placeholder with a real call to a
-  // server-side proxy that holds the Anthropic API key securely and applies the
-  // crisis-redirect safety logic noted in PROJECT_NOTES.md. Never call the Anthropic
-  // API directly from the mobile app — any embedded key would be extractable.
+    if (newMsg) {
+      setMessages((prev) => [...prev, newMsg as ChatMessage]);
+      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
+    }
+
+    setSending(false);
+  }
+
   const sendAiMessage = (text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
     setShowPrompts(false);
     setAiMessages((prev) => [...prev, { from: 'me', text: trimmed }]);
     setAiDraft('');
+    // AI response is still a placeholder — real implementation needs server-side proxy
     setTimeout(() => {
       setAiMessages((prev) => [
         ...prev,
         { from: 'ai', text: "I'm here for you. Could you tell me more about that?" },
       ]);
+      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
     }, 500);
   };
+
+  function formatTime(isoString: string): string {
+    return new Date(isoString).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+
+  if (loading) {
+    return (
+      <View style={[styles.screen, { backgroundColor: colors.background }]}>
+        <View style={styles.tabRow}>
+          <View style={styles.tabBtn} />
+        </View>
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+          <ActivityIndicator color={colors.teal} />
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={[styles.screen, { backgroundColor: colors.background }]}>
       {/* Pane switcher */}
       <View style={styles.tabRow}>
         <Pressable onPress={() => setPane('psych')} style={styles.tabBtn}>
-          <ThemedText
-            style={[styles.tabLabel, pane === 'psych' ? styles.tabLabelOn : styles.tabLabelOff]}>
-            Dr. Anita Patel
+          <ThemedText style={[styles.tabLabel, pane === 'psych' ? styles.tabLabelOn : styles.tabLabelOff]}>
+            {psychName}
           </ThemedText>
           {pane === 'psych' && <View style={[styles.tabUnderline, { backgroundColor: colors.gold }]} />}
         </Pressable>
@@ -96,51 +191,51 @@ export default function PatientChatScreen() {
         <View style={styles.pane}>
           <View style={styles.psychHeader}>
             <View style={styles.psychAvatar}>
-              <ThemedText style={styles.psychAvatarText}>AP</ThemedText>
-              <View style={styles.onlineDot} />
+              <ThemedText style={styles.psychAvatarText}>{psychInitials}</ThemedText>
             </View>
             <View style={{ flex: 1 }}>
-              <ThemedText style={styles.psychName}>Dr. Anita Patel</ThemedText>
+              <ThemedText style={styles.psychName}>{psychName}</ThemedText>
               <ThemedText type="small" style={styles.psychStatus}>
-                🟢 Online · Session at 3:00 PM
+                Your psychologist
               </ThemedText>
             </View>
             <Ionicons name="videocam" size={20} color={colors.gold} />
           </View>
 
-          <ScrollView style={styles.msgScroll} contentContainerStyle={styles.msgContent}>
-            {psychMessages.map((m, i) => {
-              if (m.f === 'assign') {
-                return (
-                  <View key={i} style={styles.assignBubble}>
-                    <ThemedText style={styles.assignLbl}>📎 ASSIGNMENT FROM DR. PATEL</ThemedText>
-                    <ThemedText style={styles.assignTitle}>{m.title}</ThemedText>
-                    <View style={styles.assignSubRow}>
-                      <ThemedText type="small" themeColor="textSecondary">
-                        {m.sub}
-                      </ThemedText>
-                      <Pressable onPress={startAssignment} style={styles.assignDoBtn}>
-                        <ThemedText style={styles.assignDoBtnText}>Start →</ThemedText>
-                      </Pressable>
-                    </View>
-                  </View>
-                );
-              }
-              const isMe = m.f === 'me';
+          <ScrollView
+            ref={scrollRef}
+            style={styles.msgScroll}
+            contentContainerStyle={styles.msgContent}
+            onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: false })}>
+            {messages.length === 0 && (
+              <ThemedText themeColor="textTertiary" style={styles.emptyChat}>
+                No messages yet. Say hello!
+              </ThemedText>
+            )}
+            {messages.map((m) => {
+              const isMe = m.sender === 'patient';
               return (
-                <View key={i} style={isMe ? styles.bubbleWrapMe : styles.bubbleWrapThem}>
+                <View key={m.id} style={isMe ? styles.bubbleWrapMe : styles.bubbleWrapThem}>
                   <ThemedText type="small" themeColor="textTertiary" style={styles.bubbleSender}>
-                    {isMe ? 'You' : 'Dr. Anita Patel'}
+                    {isMe ? 'You' : psychName} · {formatTime(m.created_at)}
                   </ThemedText>
                   <View style={isMe ? styles.bubbleMe : styles.bubbleThem}>
                     <ThemedText style={isMe ? styles.bubbleMeText : styles.bubbleThemText}>
-                      {m.t}
+                      {m.body}
                     </ThemedText>
                   </View>
                 </View>
               );
             })}
           </ScrollView>
+
+          {!sessionId && (
+            <View style={styles.noSessionBanner}>
+              <ThemedText type="small" themeColor="textTertiary">
+                You need a scheduled session to start messaging.
+              </ThemedText>
+            </View>
+          )}
 
           <View style={styles.inputBar}>
             <TextInput
@@ -149,8 +244,12 @@ export default function PatientChatScreen() {
               placeholder="Type a message…"
               placeholderTextColor={colors.textTertiary}
               style={styles.inputField}
+              editable={!!sessionId}
             />
-            <Pressable onPress={sendPsychMessage} style={styles.sendBtn}>
+            <Pressable
+              onPress={sendPsychMessage}
+              disabled={!sessionId || sending}
+              style={[styles.sendBtn, (!sessionId || sending) && { opacity: 0.4 }]}>
               <Ionicons name="send" size={14} color={colors.background} />
             </Pressable>
           </View>
@@ -172,7 +271,11 @@ export default function PatientChatScreen() {
             </Pressable>
           </View>
 
-          <ScrollView style={styles.msgScroll} contentContainerStyle={styles.msgContent}>
+          <ScrollView
+            ref={scrollRef}
+            style={styles.msgScroll}
+            contentContainerStyle={styles.msgContent}
+            onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: false })}>
             {aiMessages.map((m, i) => {
               const isMe = m.from === 'me';
               return (
@@ -229,261 +332,104 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.border,
     paddingTop: 10,
   },
-  tabBtn: {
-    flex: 1,
-    alignItems: 'center',
-    paddingBottom: 10,
-  },
-  tabLabel: {
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  tabLabelOn: {
-    color: colors.gold,
-    fontWeight: '700',
-  },
-  tabLabelOnAi: {
-    color: colors.teal,
-    fontWeight: '700',
-  },
-  tabLabelOff: {
-    color: colors.textTertiary,
-  },
-  tabUnderline: {
-    height: 2,
-    width: '100%',
-    position: 'absolute',
-    bottom: 0,
-  },
-  pane: {
-    flex: 1,
-  },
+  tabBtn: { flex: 1, alignItems: 'center', paddingBottom: 10 },
+  tabLabel: { fontSize: 13, fontWeight: '600' },
+  tabLabelOn: { color: colors.gold, fontWeight: '700' },
+  tabLabelOnAi: { color: colors.teal, fontWeight: '700' },
+  tabLabelOff: { color: colors.textTertiary },
+  tabUnderline: { height: 2, width: '100%', position: 'absolute', bottom: 0 },
+  pane: { flex: 1 },
   psychHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    padding: 12,
-    borderBottomWidth: 0.5,
-    borderBottomColor: colors.border,
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    padding: 12, borderBottomWidth: 0.5, borderBottomColor: colors.border,
   },
   psychAvatar: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 34, height: 34, borderRadius: 17,
     backgroundColor: colors.tealDim,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: 'center', justifyContent: 'center',
   },
-  psychAvatarText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#fff',
-  },
-  onlineDot: {
-    position: 'absolute',
-    bottom: 0,
-    right: 0,
-    width: 9,
-    height: 9,
-    borderRadius: 4.5,
-    backgroundColor: colors.green,
-    borderWidth: 2,
-    borderColor: colors.backgroundElement,
-  },
-  psychName: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: colors.text,
-    letterSpacing: -0.2,
-  },
-  psychStatus: {
-    color: colors.green,
-    marginTop: 1,
-  },
+  psychAvatarText: { fontSize: 11, fontWeight: '700', color: '#fff' },
+  psychName: { fontSize: 14, fontWeight: '700', color: colors.text, letterSpacing: -0.2 },
+  psychStatus: { color: colors.textSecondary, marginTop: 1 },
   aiHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    padding: 12,
-    backgroundColor: `${colors.tealDim}40`,
-    borderBottomWidth: 0.5,
-    borderBottomColor: colors.border,
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    padding: 12, backgroundColor: `${colors.tealDim}40`,
+    borderBottomWidth: 0.5, borderBottomColor: colors.border,
   },
   aiAvatar: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 36, height: 36, borderRadius: 18,
     backgroundColor: colors.tealDim,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: 'center', justifyContent: 'center',
   },
-  aiAvatarText: {
-    fontSize: 16,
-  },
-  aiStatus: {
-    color: colors.teal,
-    marginTop: 1,
-  },
+  aiAvatarText: { fontSize: 16 },
+  aiStatus: { color: colors.teal, marginTop: 1 },
   breatheBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 32, height: 32, borderRadius: 16,
     backgroundColor: `${colors.teal}26`,
-    borderWidth: 0.5,
-    borderColor: `${colors.teal}40`,
-    alignItems: 'center',
-    justifyContent: 'center',
+    borderWidth: 0.5, borderColor: `${colors.teal}40`,
+    alignItems: 'center', justifyContent: 'center',
   },
   msgScroll: { flex: 1 },
-  msgContent: {
-    padding: 16,
-    paddingBottom: 8,
+  msgContent: { padding: 16, paddingBottom: 8 },
+  emptyChat: { textAlign: 'center', marginTop: 40 },
+  noSessionBanner: {
+    padding: 12, alignItems: 'center',
+    backgroundColor: colors.backgroundElement,
+    borderTopWidth: 0.5, borderTopColor: colors.border,
   },
-  bubbleWrapThem: {
-    alignSelf: 'flex-start',
-    maxWidth: '78%',
-    marginBottom: 10,
-  },
-  bubbleWrapMe: {
-    alignSelf: 'flex-end',
-    maxWidth: '78%',
-    marginBottom: 10,
-  },
-  bubbleSender: {
-    marginBottom: 4,
-  },
+  bubbleWrapThem: { alignSelf: 'flex-start', maxWidth: '78%', marginBottom: 10 },
+  bubbleWrapMe: { alignSelf: 'flex-end', maxWidth: '78%', marginBottom: 10 },
+  bubbleSender: { marginBottom: 4 },
   bubbleThem: {
     backgroundColor: colors.backgroundSelected,
-    borderRadius: 18,
-    borderBottomLeftRadius: 5,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderWidth: 0.5,
-    borderColor: colors.border,
+    borderRadius: 18, borderBottomLeftRadius: 5,
+    paddingVertical: 10, paddingHorizontal: 14,
+    borderWidth: 0.5, borderColor: colors.border,
   },
-  bubbleThemText: {
-    fontSize: 13,
-    color: colors.text,
-    lineHeight: 19,
-  },
+  bubbleThemText: { fontSize: 13, color: colors.text, lineHeight: 19 },
   bubbleAi: {
     backgroundColor: `${colors.teal}10`,
-    borderWidth: 0.5,
-    borderColor: `${colors.teal}33`,
-    borderRadius: 18,
-    borderBottomLeftRadius: 5,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
+    borderWidth: 0.5, borderColor: `${colors.teal}33`,
+    borderRadius: 18, borderBottomLeftRadius: 5,
+    paddingVertical: 10, paddingHorizontal: 14,
   },
   bubbleMe: {
     backgroundColor: colors.tealDim,
-    borderRadius: 18,
-    borderBottomRightRadius: 5,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
+    borderRadius: 18, borderBottomRightRadius: 5,
+    paddingVertical: 10, paddingHorizontal: 14,
   },
-  bubbleMeText: {
-    fontSize: 13,
-    color: '#fff',
-    lineHeight: 19,
-  },
-  assignBubble: {
-    alignSelf: 'flex-start',
-    maxWidth: '88%',
-    backgroundColor: `${colors.purple}10`,
-    borderWidth: 0.5,
-    borderColor: `${colors.purple}40`,
-    borderRadius: 16,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    marginBottom: 10,
-  },
-  assignLbl: {
-    fontSize: 9.5,
-    fontWeight: '700',
-    color: colors.purple,
-    letterSpacing: 1,
-    marginBottom: 5,
-  },
-  assignTitle: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: colors.text,
-  },
-  assignSubRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: 6,
-  },
-  assignDoBtn: {
-    backgroundColor: colors.purple,
-    borderRadius: 8,
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-  },
-  assignDoBtnText: {
-    color: '#fff',
-    fontSize: 11,
-    fontWeight: '700',
-  },
+  bubbleMeText: { fontSize: 13, color: '#fff', lineHeight: 19 },
   promptsRow: {
-    flexDirection: 'row',
-    gap: 6,
-    flexWrap: 'wrap',
-    paddingHorizontal: 14,
-    paddingTop: 10,
-    paddingBottom: 6,
+    flexDirection: 'row', gap: 6, flexWrap: 'wrap',
+    paddingHorizontal: 14, paddingTop: 10, paddingBottom: 6,
     backgroundColor: colors.backgroundElement,
-    borderTopWidth: 0.5,
-    borderTopColor: colors.border,
+    borderTopWidth: 0.5, borderTopColor: colors.border,
   },
   promptChip: {
     backgroundColor: colors.backgroundSelected,
-    borderWidth: 0.5,
-    borderColor: `${colors.teal}40`,
-    borderRadius: 20,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
+    borderWidth: 0.5, borderColor: `${colors.teal}40`,
+    borderRadius: 20, paddingVertical: 6, paddingHorizontal: 12,
   },
-  promptChipText: {
-    fontSize: 11.5,
-    fontWeight: '500',
-    color: colors.teal,
-  },
+  promptChipText: { fontSize: 11.5, fontWeight: '500', color: colors.teal },
   inputBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderTopWidth: 0.5,
-    borderTopColor: colors.border,
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingHorizontal: 14, paddingVertical: 8,
+    borderTopWidth: 0.5, borderTopColor: colors.border,
     backgroundColor: colors.backgroundElement,
   },
   inputField: {
-    flex: 1,
-    backgroundColor: colors.backgroundSelected,
-    borderRadius: 22,
-    paddingVertical: 9,
-    paddingHorizontal: 14,
-    fontSize: 13,
-    color: colors.text,
+    flex: 1, backgroundColor: colors.backgroundSelected,
+    borderRadius: 22, paddingVertical: 9, paddingHorizontal: 14,
+    fontSize: 13, color: colors.text,
   },
   sendBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 36, height: 36, borderRadius: 18,
     backgroundColor: colors.gold,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: 'center', justifyContent: 'center',
   },
   aiSendBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 36, height: 36, borderRadius: 18,
     backgroundColor: colors.tealDim,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: 'center', justifyContent: 'center',
   },
 });
