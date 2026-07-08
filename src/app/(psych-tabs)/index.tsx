@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import { ScrollView, View, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import Ionicons from '@expo/vector-icons/Ionicons';
@@ -64,8 +64,12 @@ export default function HomeScreen() {
   async function loadData() {
     setLoading(true);
 
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
+    const { data: { session } } = await supabase.auth.getSession();
+    const user = session?.user;
+    if (!user) {
+      setLoading(false);
+      return;
+    }
 
     // Fetch doctor name
     const { data: profile } = await supabase

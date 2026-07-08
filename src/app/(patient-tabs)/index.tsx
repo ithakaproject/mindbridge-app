@@ -96,8 +96,12 @@ export default function PatientHomeScreen() {
   async function loadData() {
     setLoading(true);
 
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
+    const { data: { session } } = await supabase.auth.getSession();
+    const user = session?.user;
+    if (!user) {
+      setLoading(false);
+      return;
+    }
 
     // Fetch patient name
     const { data: profile } = await supabase
@@ -198,11 +202,18 @@ export default function PatientHomeScreen() {
     setPickerOpen(false);
     setSavingMood(true);
 
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
+    const { data: { session } } = await supabase.auth.getSession();
+    const user = session?.user;
+    if (!user) {
+      setSavingMood(false);
+      return;
+    }
 
     const moodInfo = findMood(label);
-    if (!moodInfo) return;
+    if (!moodInfo) {
+      setSavingMood(false);
+      return;
+    }
 
     // Check if there's already a check-in today
     const todayStart = new Date();

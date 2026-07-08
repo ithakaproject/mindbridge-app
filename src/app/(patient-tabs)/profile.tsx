@@ -51,7 +51,10 @@ export default function PatientProfileScreen() {
     setLoading(true);
 
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
+    if (!user) {
+      setLoading(false);
+      return;
+    }
 
     // Fetch base profile
     const { data: baseProfile } = await supabase
@@ -116,7 +119,9 @@ export default function PatientProfileScreen() {
 
   async function handleLogout() {
     await supabase.auth.signOut();
-    router.replace('/');
+    // Navigation is handled by the root layout's onAuthStateChange
+    // listener on SIGNED_OUT — calling router.replace here too caused
+    // two competing navigations firing at once.
   }
 
   async function handleRematchSubmit(reason: string, details: string) {

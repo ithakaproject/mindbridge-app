@@ -49,7 +49,10 @@ export default function ProfileScreen() {
     setLoading(true);
 
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
+    if (!user) {
+      setLoading(false);
+      return;
+    }
 
     const { data: baseProfile } = await supabase
       .from('profiles')
@@ -100,7 +103,9 @@ export default function ProfileScreen() {
 
   async function handleLogout() {
     await supabase.auth.signOut();
-    router.replace('/');
+    // Navigation is handled by the root layout's onAuthStateChange
+    // listener on SIGNED_OUT — calling router.replace here too caused
+    // two competing navigations firing at once.
   }
 
   if (loading) {
