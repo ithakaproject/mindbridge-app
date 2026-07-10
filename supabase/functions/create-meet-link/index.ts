@@ -48,12 +48,18 @@ Deno.serve(async (req) => {
 
     const { data: sessionRow, error: fetchError } = await adminClient
       .from('sessions')
-      .select('id, patient_id, psychologist_id, start_time, duration_minutes, meet_link')
+      .select('id, patient_id, psychologist_id, start_time, duration_minutes, meet_link, google_event_id')
       .eq('id', session_id)
       .single();
 
-    if (fetchError || !sessionRow) {
-      return new Response(JSON.stringify({ error: 'Session not found' }), {
+    if (fetchError) {
+      return new Response(JSON.stringify({ error: `Session lookup failed: ${fetchError.message}` }), {
+        status: 500,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+    if (!sessionRow) {
+      return new Response(JSON.stringify({ error: `No session found with id ${session_id}` }), {
         status: 404,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
@@ -62,13 +68,6 @@ Deno.serve(async (req) => {
     if (user.id !== sessionRow.patient_id && user.id !== sessionRow.psychologist_id) {
       return new Response(JSON.stringify({ error: 'Not authorized for this session' }), {
         status: 403,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
-
-    if (sessionRow.meet_link) {
-      return new Response(JSON.stringify({ meet_link: sessionRow.meet_link }), {
-        status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
@@ -94,24 +93,53 @@ Deno.serve(async (req) => {
     const startTime = new Date(sessionRow.start_time);
     const endTime = new Date(startTime.getTime() + sessionRow.duration_minutes * 60000);
 
-    const event = await calendar.events.insert({
-      calendarId,
-      conferenceDataVersion: 1,
-      requestBody: {
-        summary: 'MindBridge Session',
-        start: { dateTime: startTime.toISOString() },
-        end: { dateTime: endTime.toISOString() },
-        conferenceData: {
-          createRequest: {
-            requestId: `mindbridge-${sessionRow.id}`,
-            conferenceSolutionKey: { type: 'hangoutsMeet' },
+    let meetLink: string | null | undefined;
+    let googleEventId: string | null | undefined;
+
+    if (sessionRow.google_event_id) {
+      // A Google Calendar event already exists for this session (from an
+      // earlier booking) — this call is a reschedule, so just move the
+      // existing event to its new time instead of creating a duplicate.
+      // This keeps the same Meet link valid across reschedules.
+      try {
+        const updated = await calendar.events.patch({
+          calendarId,
+          eventId: sessionRow.google_event_id,
+          requestBody: {
+            start: { dateTime: startTime.toISOString() },
+            end: { dateTime: endTime.toISOString() },
+          },
+        });
+        meetLink = updated.data.hangoutLink ?? sessionRow.meet_link;
+        googleEventId = sessionRow.google_event_id;
+      } catch (patchErr) {
+        // The old event may have been deleted manually on Google's side —
+        // fall back to creating a fresh event rather than failing outright.
+        console.warn('Failed to patch existing event, creating a new one instead:', patchErr);
+      }
+    }
+
+    if (!googleEventId) {
+      const event = await calendar.events.insert({
+        calendarId,
+        conferenceDataVersion: 1,
+        requestBody: {
+          summary: 'MindBridge Session',
+          start: { dateTime: startTime.toISOString() },
+          end: { dateTime: endTime.toISOString() },
+          conferenceData: {
+            createRequest: {
+              requestId: `mindbridge-${sessionRow.id}-${Date.now()}`,
+              conferenceSolutionKey: { type: 'hangoutsMeet' },
+            },
           },
         },
-      },
-    });
+      });
+      meetLink = event.data.hangoutLink;
+      googleEventId = event.data.id;
+    }
 
-    const meetLink = event.data.hangoutLink;
-    if (!meetLink) {
+    if (!meetLink || !googleEventId) {
       return new Response(JSON.stringify({ error: 'Google Calendar did not return a Meet link' }), {
         status: 502,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -120,11 +148,11 @@ Deno.serve(async (req) => {
 
     const { error: updateError } = await adminClient
       .from('sessions')
-      .update({ meet_link: meetLink })
+      .update({ meet_link: meetLink, google_event_id: googleEventId })
       .eq('id', session_id);
 
     if (updateError) {
-      return new Response(JSON.stringify({ error: 'Failed to save meet link' }), {
+      return new Response(JSON.stringify({ error: `Failed to save meet link: ${updateError.message}` }), {
         status: 500,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
@@ -136,7 +164,7 @@ Deno.serve(async (req) => {
     });
   } catch (err) {
     console.error(err);
-    return new Response(JSON.stringify({ error: 'Unexpected error creating Meet link' }), {
+    return new Response(JSON.stringify({ error: `Unexpected error: ${err instanceof Error ? err.message : String(err)}` }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });

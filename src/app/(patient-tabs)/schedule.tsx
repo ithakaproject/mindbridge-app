@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback } from 'react';
+import { useMemo, useState, useCallback, useEffect } from 'react';
 import { ScrollView, View, Pressable, StyleSheet, ActivityIndicator, Linking } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { router, useFocusEffect } from 'expo-router';
@@ -51,6 +51,13 @@ function generateSlots(startTime: string, endTime: string): string[] {
   return slots;
 }
 
+function formatSessionListTime(isoString: string): string {
+  const d = new Date(isoString);
+  const datePart = d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  const timePart = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return `${datePart} · ${timePart}`;
+}
+
 type AvailabilityRow = {
   day_of_week: number;
   start_time: string;
@@ -77,12 +84,15 @@ export default function ScheduleScreen() {
   const [booking, setBooking] = useState(false);
   const [bookingError, setBookingError] = useState('');
   const [bookedMeetLink, setBookedMeetLink] = useState<string | null>(null);
+  const [lastAction, setLastAction] = useState<'book' | 'reschedule'>('book');
 
   const [psychologistId, setPsychologistId] = useState<string | null>(null);
   const [psychologistName, setPsychologistName] = useState('Your psychologist');
   const [patientId, setPatientId] = useState<string | null>(null);
   const [availability, setAvailability] = useState<AvailabilityRow[]>([]);
   const [bookedSessions, setBookedSessions] = useState<SessionRow[]>([]);
+  const [allUpcomingSessions, setAllUpcomingSessions] = useState<SessionRow[]>([]);
+  const [reschedulingSession, setReschedulingSession] = useState<SessionRow | null>(null);
 
   const isCurrentMonth = viewYear === today.getFullYear() && viewMonth === today.getMonth();
 
@@ -132,7 +142,7 @@ export default function ScheduleScreen() {
       setAvailability((availData as AvailabilityRow[]) ?? []);
     }
 
-    // Get booked sessions for this month
+    // Get booked sessions for this month (used by the calendar grid)
     const monthStart = new Date(viewYear, viewMonth, 1).toISOString();
     const monthEnd = new Date(viewYear, viewMonth + 1, 0, 23, 59, 59).toISOString();
     const { data: sessData } = await supabase
@@ -143,10 +153,30 @@ export default function ScheduleScreen() {
       .lte('start_time', monthEnd);
     setBookedSessions((sessData as SessionRow[]) ?? []);
 
+    // Get ALL upcoming sessions regardless of month (used by the reschedule list)
+    const nowIso = new Date().toISOString();
+    const { data: upcomingData } = await supabase
+      .from('sessions')
+      .select('id, start_time, duration_minutes, meet_link')
+      .eq('patient_id', user.id)
+      .gte('start_time', nowIso)
+      .order('start_time');
+    setAllUpcomingSessions((upcomingData as SessionRow[]) ?? []);
+
     setLoading(false);
   }
 
   useFocusEffect(useCallback(() => { loadData(); }, [viewYear, viewMonth]));
+
+  // Reset reschedule/selection state whenever the mode pill changes, so
+  // stale picks don't leak between booking and rescheduling.
+  useEffect(() => {
+    setSelectedDay(null);
+    setBookingError('');
+    if (mode === 'book') {
+      setReschedulingSession(null);
+    }
+  }, [mode]);
 
   const changeMonth = (dir: 1 | -1) => {
     setSelectedDay(null);
@@ -158,15 +188,17 @@ export default function ScheduleScreen() {
     setViewYear(y);
   };
 
-  // Build a set of booked date keys
+  // Build a set of booked date keys. While rescheduling, the session being
+  // moved is excluded so its current day frees back up for picking a new slot.
   const bookedDateKeys = useMemo(() => {
     const keys = new Set<string>();
     for (const s of bookedSessions) {
+      if (reschedulingSession && s.id === reschedulingSession.id) continue;
       const d = new Date(s.start_time);
       keys.add(dateKey(d.getFullYear(), d.getMonth(), d.getDate()));
     }
     return keys;
-  }, [bookedSessions]);
+  }, [bookedSessions, reschedulingSession]);
 
   // Check if a day has availability based on day_of_week
   const hasAvailability = (day: number) => {
@@ -181,10 +213,11 @@ export default function ScheduleScreen() {
   const selectedBookedSession = useMemo(() => {
     if (!selectedKey) return null;
     return bookedSessions.find((s) => {
+      if (reschedulingSession && s.id === reschedulingSession.id) return false;
       const d = new Date(s.start_time);
       return dateKey(d.getFullYear(), d.getMonth(), d.getDate()) === selectedKey;
     }) ?? null;
-  }, [selectedKey, bookedSessions]);
+  }, [selectedKey, bookedSessions, reschedulingSession]);
 
   // Get slots for selected day
   const selectedSlots = useMemo(() => {
@@ -201,8 +234,21 @@ export default function ScheduleScreen() {
     setConfirmOpen(true);
   };
 
+  const startReschedule = (session: SessionRow) => {
+    setReschedulingSession(session);
+    setSelectedDay(null);
+    setBookingError('');
+  };
+
+  const cancelReschedule = () => {
+    setReschedulingSession(null);
+    setSelectedDay(null);
+    setBookingError('');
+  };
+
   async function confirmBooking() {
     if (!selectedDay || !pickedTime || !psychologistId || !patientId) return;
+    setLastAction('book');
     setBooking(true);
     setBookingError('');
 
@@ -232,14 +278,12 @@ export default function ScheduleScreen() {
       return;
     }
 
-    // Add to local booked set immediately so the calendar updates right away
+    // Add to local booked sets immediately so both views update right away
     setBookedSessions((prev) => [...prev, insertedSession as SessionRow]);
+    setAllUpcomingSessions((prev) => [...prev, insertedSession as SessionRow]);
 
     let meetLink: string | null = null;
 
-    // Ask the Edge Function to create the Google Calendar event + Meet link.
-    // This runs after the booking succeeds, so a slow/failed Meet link never
-    // blocks the booking itself from going through.
     try {
       const { data: fnData, error: fnError } = await supabase.functions.invoke(
         'create-meet-link',
@@ -249,12 +293,20 @@ export default function ScheduleScreen() {
       if (!fnError && fnData?.meet_link) {
         meetLink = fnData.meet_link;
         setBookedSessions((prev) =>
-          prev.map((s) =>
-            s.id === insertedSession.id ? { ...s, meet_link: meetLink } : s
-          )
+          prev.map((s) => (s.id === insertedSession.id ? { ...s, meet_link: meetLink } : s))
+        );
+        setAllUpcomingSessions((prev) =>
+          prev.map((s) => (s.id === insertedSession.id ? { ...s, meet_link: meetLink } : s))
         );
       } else if (fnError) {
-        console.warn('Meet link creation failed:', fnError);
+        let details = fnError.message;
+        try {
+          const body = await fnError.context?.json();
+          if (body?.error) details = body.error;
+        } catch (parseErr) {
+          // response body wasn't JSON — fall back to the generic message
+        }
+        console.warn('MEET LINK ERROR DETAILS:', details);
       }
     } catch (fnErr) {
       console.warn('Meet link creation failed:', fnErr);
@@ -265,6 +317,89 @@ export default function ScheduleScreen() {
     setConfirmOpen(false);
     setSuccessOpen(true);
   }
+
+  async function confirmReschedule() {
+    if (!selectedDay || !pickedTime || !reschedulingSession) return;
+    setLastAction('reschedule');
+    setBooking(true);
+    setBookingError('');
+
+    const [timePart, period] = pickedTime.split(' ');
+    let [hours, minutes] = timePart.split(':').map(Number);
+    if (period === 'PM' && hours !== 12) hours += 12;
+    if (period === 'AM' && hours === 12) hours = 0;
+
+    const sessionDate = new Date(viewYear, viewMonth, selectedDay, hours, minutes, 0);
+
+    // Just update the start_time — the existing Google Calendar event and
+    // its Meet link get reused (moved to the new time) rather than
+    // discarded, so we don't clear meet_link here.
+    const { data: updatedSession, error } = await supabase
+      .from('sessions')
+      .update({
+        start_time: sessionDate.toISOString(),
+      })
+      .eq('id', reschedulingSession.id)
+      .select('id, start_time, duration_minutes, meet_link')
+      .single();
+
+    if (error || !updatedSession) {
+      setBooking(false);
+      setBookingError(error?.message ?? 'Reschedule failed. Please try again.');
+      return;
+    }
+
+    setBookedSessions((prev) =>
+      prev.map((s) => (s.id === updatedSession.id ? (updatedSession as SessionRow) : s))
+    );
+    setAllUpcomingSessions((prev) =>
+      prev.map((s) => (s.id === updatedSession.id ? (updatedSession as SessionRow) : s))
+    );
+
+    let meetLink: string | null = null;
+
+    try {
+      const { data: fnData, error: fnError } = await supabase.functions.invoke(
+        'create-meet-link',
+        { body: { session_id: updatedSession.id } }
+      );
+
+      if (!fnError && fnData?.meet_link) {
+        meetLink = fnData.meet_link;
+        setBookedSessions((prev) =>
+          prev.map((s) => (s.id === updatedSession.id ? { ...s, meet_link: meetLink } : s))
+        );
+        setAllUpcomingSessions((prev) =>
+          prev.map((s) => (s.id === updatedSession.id ? { ...s, meet_link: meetLink } : s))
+        );
+      } else if (fnError) {
+        let details = fnError.message;
+        try {
+          const body = await fnError.context?.json();
+          if (body?.error) details = body.error;
+        } catch (parseErr) {
+          // response body wasn't JSON — fall back to the generic message
+        }
+        console.warn('MEET LINK ERROR DETAILS:', details);
+      }
+    } catch (fnErr) {
+      console.warn('Meet link creation failed:', fnErr);
+    }
+
+    setBookedMeetLink(meetLink);
+    setBooking(false);
+    setConfirmOpen(false);
+    setSuccessOpen(true);
+    setReschedulingSession(null);
+  }
+
+  const handleConfirmPress = () => {
+    if (reschedulingSession) {
+      confirmReschedule();
+    } else {
+      confirmBooking();
+    }
+  };
 
   const openMeetLink = (link: string) => {
     Linking.openURL(link);
@@ -280,6 +415,9 @@ export default function ScheduleScreen() {
       </ThemedView>
     );
   }
+
+  const showCalendarPicker = mode === 'book' || (mode === 'rebook' && reschedulingSession != null);
+  const showRescheduleList = mode === 'rebook' && reschedulingSession == null;
 
   return (
     <ThemedView style={styles.screen}>
@@ -301,134 +439,184 @@ export default function ScheduleScreen() {
           </Pressable>
         </View>
 
-        <View style={styles.legendRow}>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: colors.teal }]} />
-            <ThemedText type="small" themeColor="textTertiary">Available</ThemedText>
-          </View>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: colors.gold }]} />
-            <ThemedText type="small" themeColor="textTertiary">Booked</ThemedText>
-          </View>
-        </View>
-
-        <View style={styles.monthNav}>
-          <Pressable onPress={() => changeMonth(-1)} style={styles.navBtn}>
-            <Ionicons name="chevron-back" size={15} color={colors.textSecondary} />
-          </Pressable>
-          <ThemedText style={styles.monthLabel}>{MONTH_NAMES[viewMonth]} {viewYear}</ThemedText>
-          <Pressable onPress={() => changeMonth(1)} style={styles.navBtn}>
-            <Ionicons name="chevron-forward" size={15} color={colors.textSecondary} />
-          </Pressable>
-        </View>
-
-        <View style={styles.weekdaysRow}>
-          {WEEKDAY_LABELS.map((w, i) => (
-            <ThemedText key={i} type="small" themeColor="textTertiary" style={styles.weekdayLabel}>{w}</ThemedText>
-          ))}
-        </View>
-
-        <View style={styles.grid}>
-          {Array.from({ length: leadingBlanks }).map((_, i) => (
-            <View key={`blank-${i}`} style={styles.dayCell} />
-          ))}
-          {Array.from({ length: daysInMonth }).map((_, i) => {
-            const day = i + 1;
-            const key = dateKey(viewYear, viewMonth, day);
-            const isBooked = bookedDateKeys.has(key);
-            const avail = hasAvailability(day);
-            const isPast = isCurrentMonth && day < today.getDate();
-            const isToday = isCurrentMonth && day === today.getDate();
-            const isSelected = selectedDay === day;
-
-            return (
-              <Pressable
-                key={day}
-                disabled={isPast}
-                onPress={() => setSelectedDay(day)}
-                style={[
-                  styles.dayCell,
-                  !isPast && styles.dayCellCurrent,
-                  isToday && styles.dayCellToday,
-                  isBooked && !isPast && styles.dayCellBooked,
-                  avail && !isBooked && !isPast && styles.dayCellHasAvailability,
-                  isSelected && styles.dayCellSelected,
-                ]}>
-                <ThemedText style={[
-                  styles.dayText,
-                  isPast && styles.dayTextPast,
-                  !isPast && styles.dayTextCurrent,
-                  isToday && styles.dayTextToday,
-                  isBooked && !isPast && styles.dayTextBooked,
-                  isSelected && styles.dayTextSelected,
-                ]}>
-                  {day}
-                </ThemedText>
-                {!isPast && !isSelected && (isBooked || avail) && (
-                  <View style={[styles.dot, { backgroundColor: isBooked ? colors.gold : colors.teal }]} />
-                )}
-              </Pressable>
-            );
-          })}
-        </View>
-
-        {selectedDay == null ? (
-          <ThemedText style={styles.slotsLabelEmpty}>Select a date</ThemedText>
-        ) : (
-          <ThemedText style={styles.slotsLabel}>
-            {MONTH_SHORT[viewMonth]} {selectedDay}
-          </ThemedText>
-        )}
-
-        {isSelectedBooked && (
-          <View style={styles.bookedSlot}>
-            <View style={{ flex: 1 }}>
-              <ThemedText style={styles.bookedSlotTime}>Booked</ThemedText>
-              <ThemedText style={styles.slotDoc}>{psychologistName}</ThemedText>
-            </View>
-            {selectedBookedSession?.meet_link ? (
-              <Pressable
-                onPress={() => openMeetLink(selectedBookedSession.meet_link!)}
-                style={styles.joinBtn}>
-                <Ionicons name="videocam" size={14} color={colors.background} />
-                <ThemedText style={styles.joinBtnText}>Join Session</ThemedText>
-              </Pressable>
+        {showRescheduleList && (
+          <>
+            <ThemedText style={styles.slotsLabel}>Your upcoming sessions</ThemedText>
+            {allUpcomingSessions.length === 0 ? (
+              <ThemedText themeColor="textTertiary" style={styles.noSlots}>
+                You don't have any upcoming sessions to reschedule.
+              </ThemedText>
             ) : (
-              <ThemedText style={styles.bookedLabel}>Confirmed ✓</ThemedText>
+              allUpcomingSessions.map((s) => (
+                <View key={s.id} style={styles.rescheduleRow}>
+                  <View style={{ flex: 1 }}>
+                    <ThemedText style={styles.rescheduleRowTime}>
+                      {formatSessionListTime(s.start_time)}
+                    </ThemedText>
+                    <ThemedText type="small" themeColor="textSecondary">
+                      {psychologistName}
+                    </ThemedText>
+                  </View>
+                  <Pressable onPress={() => startReschedule(s)} style={styles.rescheduleBtn}>
+                    <ThemedText style={styles.rescheduleBtnText}>Reschedule</ThemedText>
+                  </Pressable>
+                </View>
+              ))
             )}
-          </View>
+          </>
         )}
 
-        {selectedDay != null && !isSelectedBooked && selectedSlots.length === 0 && (
-          <ThemedText type="small" themeColor="textTertiary" style={styles.noSlots}>
-            No slots available on this date.
-          </ThemedText>
-        )}
+        {showCalendarPicker && (
+          <>
+            {reschedulingSession && (
+              <View style={styles.reschedulingBanner}>
+                <ThemedText type="small" themeColor="gold" style={{ fontWeight: '600', flex: 1 }}>
+                  Moving your {formatSessionListTime(reschedulingSession.start_time)} session — pick a new date & time below.
+                </ThemedText>
+                <Pressable onPress={cancelReschedule}>
+                  <ThemedText type="small" themeColor="teal">Cancel</ThemedText>
+                </Pressable>
+              </View>
+            )}
 
-        {!isSelectedBooked && selectedSlots.map((slot, i) => (
-          <Pressable key={i} onPress={() => pickSlot(slot)}>
-            <ThemedView type="backgroundElement" style={styles.slotItem}>
-              <ThemedText themeColor="gold" style={styles.slotTime}>{slot}</ThemedText>
-              <ThemedText style={styles.slotDoc}>{psychologistName}</ThemedText>
-              <ThemedText style={styles.slotAvail}>Available</ThemedText>
-            </ThemedView>
-          </Pressable>
-        ))}
+            <View style={styles.legendRow}>
+              <View style={styles.legendItem}>
+                <View style={[styles.legendDot, { backgroundColor: colors.teal }]} />
+                <ThemedText type="small" themeColor="textTertiary">Available</ThemedText>
+              </View>
+              <View style={styles.legendItem}>
+                <View style={[styles.legendDot, { backgroundColor: colors.gold }]} />
+                <ThemedText type="small" themeColor="textTertiary">Booked</ThemedText>
+              </View>
+            </View>
 
-        {!psychologistId && (
-          <ThemedText themeColor="textTertiary" style={styles.noSlots}>
-            You haven't been matched with a psychologist yet.
-          </ThemedText>
+            <View style={styles.monthNav}>
+              <Pressable onPress={() => changeMonth(-1)} style={styles.navBtn}>
+                <Ionicons name="chevron-back" size={15} color={colors.textSecondary} />
+              </Pressable>
+              <ThemedText style={styles.monthLabel}>{MONTH_NAMES[viewMonth]} {viewYear}</ThemedText>
+              <Pressable onPress={() => changeMonth(1)} style={styles.navBtn}>
+                <Ionicons name="chevron-forward" size={15} color={colors.textSecondary} />
+              </Pressable>
+            </View>
+
+            <View style={styles.weekdaysRow}>
+              {WEEKDAY_LABELS.map((w, i) => (
+                <ThemedText key={i} type="small" themeColor="textTertiary" style={styles.weekdayLabel}>{w}</ThemedText>
+              ))}
+            </View>
+
+            <View style={styles.grid}>
+              {Array.from({ length: leadingBlanks }).map((_, i) => (
+                <View key={`blank-${i}`} style={styles.dayCell} />
+              ))}
+              {Array.from({ length: daysInMonth }).map((_, i) => {
+                const day = i + 1;
+                const key = dateKey(viewYear, viewMonth, day);
+                const isBooked = bookedDateKeys.has(key);
+                const avail = hasAvailability(day);
+                const isPast = isCurrentMonth && day < today.getDate();
+                const isToday = isCurrentMonth && day === today.getDate();
+                const isSelected = selectedDay === day;
+
+                return (
+                  <Pressable
+                    key={day}
+                    disabled={isPast}
+                    onPress={() => setSelectedDay(day)}
+                    style={[
+                      styles.dayCell,
+                      !isPast && styles.dayCellCurrent,
+                      isToday && styles.dayCellToday,
+                      isBooked && !isPast && styles.dayCellBooked,
+                      avail && !isBooked && !isPast && styles.dayCellHasAvailability,
+                      isSelected && styles.dayCellSelected,
+                    ]}>
+                    <ThemedText style={[
+                      styles.dayText,
+                      isPast && styles.dayTextPast,
+                      !isPast && styles.dayTextCurrent,
+                      isToday && styles.dayTextToday,
+                      isBooked && !isPast && styles.dayTextBooked,
+                      isSelected && styles.dayTextSelected,
+                    ]}>
+                      {day}
+                    </ThemedText>
+                    {!isPast && !isSelected && (isBooked || avail) && (
+                      <View style={[styles.dot, { backgroundColor: isBooked ? colors.gold : colors.teal }]} />
+                    )}
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            {selectedDay == null ? (
+              <ThemedText style={styles.slotsLabelEmpty}>Select a date</ThemedText>
+            ) : (
+              <ThemedText style={styles.slotsLabel}>
+                {MONTH_SHORT[viewMonth]} {selectedDay}
+              </ThemedText>
+            )}
+
+            {isSelectedBooked && (
+              <View style={styles.bookedSlot}>
+                <View style={{ flex: 1 }}>
+                  <ThemedText style={styles.bookedSlotTime}>Booked</ThemedText>
+                  <ThemedText style={styles.slotDoc}>{psychologistName}</ThemedText>
+                </View>
+                {selectedBookedSession?.meet_link ? (
+                  <Pressable
+                    onPress={() => openMeetLink(selectedBookedSession.meet_link!)}
+                    style={styles.joinBtn}>
+                    <Ionicons name="videocam" size={14} color={colors.background} />
+                    <ThemedText style={styles.joinBtnText}>Join Session</ThemedText>
+                  </Pressable>
+                ) : (
+                  <ThemedText style={styles.bookedLabel}>Confirmed ✓</ThemedText>
+                )}
+              </View>
+            )}
+
+            {selectedDay != null && !isSelectedBooked && selectedSlots.length === 0 && (
+              <ThemedText type="small" themeColor="textTertiary" style={styles.noSlots}>
+                No slots available on this date.
+              </ThemedText>
+            )}
+
+            {!isSelectedBooked && selectedSlots.map((slot, i) => (
+              <Pressable key={i} onPress={() => pickSlot(slot)}>
+                <ThemedView type="backgroundElement" style={styles.slotItem}>
+                  <ThemedText themeColor="gold" style={styles.slotTime}>{slot}</ThemedText>
+                  <ThemedText style={styles.slotDoc}>{psychologistName}</ThemedText>
+                  <ThemedText style={styles.slotAvail}>Available</ThemedText>
+                </ThemedView>
+              </Pressable>
+            ))}
+
+            {!psychologistId && (
+              <ThemedText themeColor="textTertiary" style={styles.noSlots}>
+                You haven't been matched with a psychologist yet.
+              </ThemedText>
+            )}
+          </>
         )}
       </ScrollView>
 
       <BottomSheetModal
         visible={confirmOpen}
         onClose={() => setConfirmOpen(false)}
-        title="Confirm booking"
-        subtitle={`You're about to book a session with ${psychologistName}.`}
-        ctaLabel={booking ? 'Booking…' : 'Confirm session'}
-        onCta={confirmBooking}
+        title={reschedulingSession ? 'Confirm reschedule' : 'Confirm booking'}
+        subtitle={
+          reschedulingSession
+            ? "You're about to move this session to a new time."
+            : `You're about to book a session with ${psychologistName}.`
+        }
+        ctaLabel={
+          booking
+            ? (reschedulingSession ? 'Rescheduling…' : 'Booking…')
+            : (reschedulingSession ? 'Confirm new time' : 'Confirm session')
+        }
+        onCta={handleConfirmPress}
         cancelLabel="Cancel">
         <View style={styles.confirmCard}>
           <ThemedText style={styles.confirmTime}>
@@ -449,7 +637,7 @@ export default function ScheduleScreen() {
         visible={successOpen}
         onClose={() => setSuccessOpen(false)}
         icon="🗓️"
-        title="Session booked!"
+        title={lastAction === 'reschedule' ? 'Session rescheduled!' : 'Session booked!'}
         subtitle={`${MONTH_SHORT[viewMonth]} ${selectedDay} · ${pickedTime} with ${psychologistName} is confirmed.`}
       />
     </ThemedView>
@@ -533,4 +721,24 @@ const styles = StyleSheet.create({
     borderRadius: 14, padding: 14, marginBottom: 4,
   },
   confirmTime: { fontSize: 15, fontWeight: '700', color: colors.text },
+  rescheduleRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    paddingVertical: 11, paddingHorizontal: 15,
+    borderRadius: 16, marginBottom: 7,
+    backgroundColor: colors.backgroundElement,
+    borderWidth: 0.5, borderColor: colors.border,
+  },
+  rescheduleRowTime: { fontSize: 13.5, fontWeight: '700', color: colors.text },
+  rescheduleBtn: {
+    backgroundColor: colors.gold, borderRadius: 10,
+    paddingVertical: 7, paddingHorizontal: 12,
+  },
+  rescheduleBtnText: { fontSize: 12, fontWeight: '700', color: colors.background },
+  reschedulingBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: `${colors.gold}12`, borderRadius: 12,
+    paddingVertical: 9, paddingHorizontal: 13,
+    borderWidth: 0.5, borderColor: `${colors.gold}40`,
+    marginBottom: 12,
+  },
 });
