@@ -41,16 +41,55 @@ function formatTime(isoString: string) {
   return new Date(isoString).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
+// Raw shape returned directly from the sessions table — no embedded join,
+// since sessions.patient_id has no FK path to profiles (it points to
+// patient_profiles instead). Patient names are fetched separately below.
+type RawSessionRow = {
+  id: string;
+  start_time: string;
+  duration_minutes: number;
+  meet_link: string | null;
+  patient_id: string;
+};
+
 type SessionRow = {
   id: string;
   start_time: string;
   duration_minutes: number;
   meet_link: string | null;
-  patient: {
-    id: string;
-    full_name: string;
-  };
+  patient_id: string;
+  patient_name: string;
 };
+
+// Fetches full_name for a list of patient ids in one batched query, and
+// returns a lookup map. This replaces the broken embedded-join pattern.
+async function fetchPatientNames(patientIds: string[]): Promise<Record<string, string>> {
+  const uniqueIds = Array.from(new Set(patientIds));
+  if (uniqueIds.length === 0) return {};
+
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('id, full_name')
+    .in('id', uniqueIds);
+
+  if (error) {
+    console.warn('PATIENT NAMES LOOKUP ERROR:', error.message);
+    return {};
+  }
+
+  const map: Record<string, string> = {};
+  (data ?? []).forEach((p) => {
+    map[p.id] = p.full_name ?? 'Patient';
+  });
+  return map;
+}
+
+function attachNames(rows: RawSessionRow[], nameMap: Record<string, string>): SessionRow[] {
+  return rows.map((r) => ({
+    ...r,
+    patient_name: nameMap[r.patient_id] ?? 'Patient',
+  }));
+}
 
 export default function HomeScreen() {
   const [linkRevealed, setLinkRevealed] = useState(false);
@@ -91,36 +130,49 @@ export default function HomeScreen() {
     const tomorrowEnd = new Date(tomorrowStart);
     tomorrowEnd.setHours(23, 59, 59, 999);
 
-    // Fetch today's sessions
-    const { data: todayData } = await supabase
+    // Fetch today's sessions (no embedded join — patient_id has no FK to profiles)
+    const { data: todayData, error: todayError } = await supabase
       .from('sessions')
-      .select('id, start_time, duration_minutes, meet_link, patient:patient_id(id, full_name)')
+      .select('id, start_time, duration_minutes, meet_link, patient_id')
       .eq('psychologist_id', user.id)
       .gte('start_time', todayStart.toISOString())
       .lte('start_time', todayEnd.toISOString())
       .order('start_time');
-    setTodaySessions((todayData as any) ?? []);
+    if (todayError) console.warn('TODAY SESSIONS ERROR:', todayError.message);
 
     // Fetch tomorrow's sessions
-    const { data: tomorrowData } = await supabase
+    const { data: tomorrowData, error: tomorrowError } = await supabase
       .from('sessions')
-      .select('id, start_time, duration_minutes, meet_link, patient:patient_id(id, full_name)')
+      .select('id, start_time, duration_minutes, meet_link, patient_id')
       .eq('psychologist_id', user.id)
       .gte('start_time', tomorrowStart.toISOString())
       .lte('start_time', tomorrowEnd.toISOString())
       .order('start_time');
-    setTomorrowSessions((tomorrowData as any) ?? []);
+    if (tomorrowError) console.warn('TOMORROW SESSIONS ERROR:', tomorrowError.message);
 
-    // Next upcoming session
-    const { data: nextData } = await supabase
+    // Next upcoming session (any date)
+    const { data: nextData, error: nextError } = await supabase
       .from('sessions')
-      .select('id, start_time, duration_minutes, meet_link, patient:patient_id(id, full_name)')
+      .select('id, start_time, duration_minutes, meet_link, patient_id')
       .eq('psychologist_id', user.id)
       .gte('start_time', now.toISOString())
       .order('start_time')
       .limit(1)
-      .single();
-    setNextSession((nextData as any) ?? null);
+      .maybeSingle();
+    if (nextError) console.warn('NEXT SESSION ERROR:', nextError.message);
+
+    // Gather every patient id across all three queries and fetch their
+    // names in one batched call instead of three separate embedded joins.
+    const allPatientIds = [
+      ...(todayData ?? []).map((r) => r.patient_id),
+      ...(tomorrowData ?? []).map((r) => r.patient_id),
+      ...(nextData ? [nextData.patient_id] : []),
+    ];
+    const nameMap = await fetchPatientNames(allPatientIds);
+
+    setTodaySessions(attachNames((todayData as RawSessionRow[]) ?? [], nameMap));
+    setTomorrowSessions(attachNames((tomorrowData as RawSessionRow[]) ?? [], nameMap));
+    setNextSession(nextData ? attachNames([nextData as RawSessionRow], nameMap)[0] : null);
 
     // Stats
     const { count: patientCount } = await supabase
@@ -183,7 +235,7 @@ export default function HomeScreen() {
                 <View style={styles.focusGlow} />
                 <ThemedText style={styles.focusEyebrow}>NEXT SESSION</ThemedText>
                 <ThemedText style={styles.focusTitle}>
-                  {(nextSession.patient as any)?.full_name ?? 'Patient'}
+                  {nextSession.patient_name}
                 </ThemedText>
                 <ThemedText style={styles.focusSub}>
                   {formatTime(nextSession.start_time)} · {nextSession.duration_minutes} min
@@ -246,8 +298,8 @@ export default function HomeScreen() {
           return (
             <SessionSlot
               key={s.id}
-              session={{ id: (s.patient as any)?.id, time: formatTime(s.start_time), name: (s.patient as any)?.full_name ?? 'Patient', tag, tagColor }}
-              onPress={() => openPatient((s.patient as any)?.id)}
+              session={{ id: s.patient_id, time: formatTime(s.start_time), name: s.patient_name, tag, tagColor }}
+              onPress={() => openPatient(s.patient_id)}
             />
           );
         })}
@@ -264,8 +316,8 @@ export default function HomeScreen() {
           return (
             <SessionSlot
               key={s.id}
-              session={{ id: (s.patient as any)?.id, time: formatTime(s.start_time), name: (s.patient as any)?.full_name ?? 'Patient', tag, tagColor }}
-              onPress={() => openPatient((s.patient as any)?.id)}
+              session={{ id: s.patient_id, time: formatTime(s.start_time), name: s.patient_name, tag, tagColor }}
+              onPress={() => openPatient(s.patient_id)}
             />
           );
         })}

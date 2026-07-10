@@ -1,5 +1,5 @@
 import { useMemo, useState, useCallback } from 'react';
-import { ScrollView, View, Pressable, StyleSheet, ActivityIndicator, Modal } from 'react-native';
+import { ScrollView, View, Pressable, StyleSheet, ActivityIndicator, Modal, Linking } from 'react-native';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { ThemedText } from '@/components/themed-text';
@@ -63,19 +63,48 @@ type AvailabilityRow = {
   end_time: string;
 };
 
-type SessionRow = {
+// Raw shape from the sessions table — no embedded join, since
+// sessions.patient_id has no FK path to profiles (it points to
+// patient_profiles instead). Patient names are fetched separately.
+type RawSessionRow = {
   id: string;
   start_time: string;
-  duration: number;
-  patient: { id: string; full_name: string };
+  duration_minutes: number;
+  meet_link: string | null;
+  patient_id: string;
+};
+
+type SessionRow = RawSessionRow & {
+  patient_name: string;
 };
 
 type ActivePicker = { dayOfWeek: number; field: 'start_time' | 'end_time' } | null;
 
+// Fetches full_name for a list of patient ids in one batched query.
+async function fetchPatientNames(patientIds: string[]): Promise<Record<string, string>> {
+  const uniqueIds = Array.from(new Set(patientIds));
+  if (uniqueIds.length === 0) return {};
+
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('id, full_name')
+    .in('id', uniqueIds);
+
+  if (error) {
+    console.warn('PATIENT NAMES LOOKUP ERROR:', error.message);
+    return {};
+  }
+
+  const map: Record<string, string> = {};
+  (data ?? []).forEach((p) => {
+    map[p.id] = p.full_name ?? 'Patient';
+  });
+  return map;
+}
+
 export default function CalendarScreen() {
   const { mode: initialMode } = useLocalSearchParams<{ mode?: string }>();
   const today = new Date();
-
   const [mode, setMode] = useState<'sessions' | 'availability'>(
     initialMode === 'availability' ? 'availability' : 'sessions'
   );
@@ -100,36 +129,45 @@ export default function CalendarScreen() {
   async function loadData() {
     setLoading(true);
 
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
+    const { data: { session } } = await supabase.auth.getSession();
+    const user = session?.user;
+    if (!user) {
+      setLoading(false);
+      return;
+    }
     setUserId(user.id);
 
-    const { data: availData } = await supabase
+    const { data: availData, error: availError } = await supabase
       .from('availability')
       .select('id, day_of_week, start_time, end_time')
       .eq('psychologist_id', user.id)
       .order('day_of_week');
+    if (availError) console.warn('AVAILABILITY ERROR:', availError.message);
     setAvailability((availData as AvailabilityRow[]) ?? []);
 
     const monthStart = new Date(viewYear, viewMonth, 1).toISOString();
     const monthEnd = new Date(viewYear, viewMonth + 1, 0, 23, 59, 59).toISOString();
-
-    const { data: sessData } = await supabase
+    const { data: sessData, error: sessError } = await supabase
       .from('sessions')
-      .select('id, start_time, duration, patient:patient_id(id, full_name)')
+      .select('id, start_time, duration_minutes, meet_link, patient_id')
       .eq('psychologist_id', user.id)
       .gte('start_time', monthStart)
       .lte('start_time', monthEnd)
       .order('start_time');
+    if (sessError) console.warn('SESSIONS ERROR:', sessError.message);
+
+    const rawSessions = (sessData as RawSessionRow[]) ?? [];
+    const nameMap = await fetchPatientNames(rawSessions.map((s) => s.patient_id));
 
     const byDate: Record<string, SessionRow[]> = {};
-    for (const s of (sessData as any[]) ?? []) {
+    for (const s of rawSessions) {
       const d = new Date(s.start_time);
       const key = dateKey(d.getFullYear(), d.getMonth(), d.getDate());
       if (!byDate[key]) byDate[key] = [];
-      byDate[key].push(s);
+      byDate[key].push({ ...s, patient_name: nameMap[s.patient_id] ?? 'Patient' });
     }
     setSessionsByDate(byDate);
+
     setLoading(false);
   }
 
@@ -152,13 +190,16 @@ export default function CalendarScreen() {
     router.push({ pathname: '/patient/[id]', params: { id: patientId } });
   };
 
+  const openMeetLink = (link: string) => {
+    Linking.openURL(link);
+  };
+
   const getAvailForDay = (dow: number) => availability.find((a) => a.day_of_week === dow);
 
   async function toggleDayAvailability(dow: number) {
     if (!userId) return;
     setSaving(true);
     const existing = getAvailForDay(dow);
-
     if (existing) {
       await supabase.from('availability').delete().eq('id', existing.id);
       setAvailability((prev) => prev.filter((a) => a.id !== existing.id));
@@ -213,7 +254,6 @@ export default function CalendarScreen() {
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={[styles.scrollContent, { paddingBottom: BottomTabInset + Spacing.four }]}>
-
         <View style={styles.pillRow}>
           <Pressable onPress={() => setMode('sessions')} style={[styles.pill, mode === 'sessions' && styles.pillOn]}>
             <ThemedText style={[styles.pillText, mode === 'sessions' && styles.pillTextOn]}>Sessions</ThemedText>
@@ -295,19 +335,25 @@ export default function CalendarScreen() {
               </View>
             ) : (
               selectedSessions.map((s) => (
-                <Pressable key={s.id} onPress={() => openPatient((s.patient as any)?.id)}>
-                  <ThemedView type="backgroundElement" style={styles.slotItem}>
+                <ThemedView key={s.id} type="backgroundElement" style={styles.slotItem}>
+                  <Pressable onPress={() => openPatient(s.patient_id)} style={styles.slotMain}>
                     <ThemedText themeColor="gold" style={styles.slotTime}>
                       {formatTime(s.start_time)}
                     </ThemedText>
-                    <ThemedText style={styles.slotName}>
-                      {(s.patient as any)?.full_name ?? 'Unknown patient'}
-                    </ThemedText>
-                    <ThemedText type="small" themeColor="textTertiary">
-                      {s.duration} min
-                    </ThemedText>
-                  </ThemedView>
-                </Pressable>
+                    <View style={{ flex: 1 }}>
+                      <ThemedText style={styles.slotName}>{s.patient_name}</ThemedText>
+                      <ThemedText type="small" themeColor="textTertiary">
+                        {s.duration_minutes} min
+                      </ThemedText>
+                    </View>
+                  </Pressable>
+                  {s.meet_link && (
+                    <Pressable onPress={() => openMeetLink(s.meet_link!)} style={styles.joinBtn}>
+                      <Ionicons name="videocam" size={14} color={colors.background} />
+                      <ThemedText style={styles.joinBtnText}>Join</ThemedText>
+                    </Pressable>
+                  )}
+                </ThemedView>
               ))
             )}
           </>
@@ -431,13 +477,20 @@ const styles = StyleSheet.create({
   emptyTitle: { fontWeight: '700', marginBottom: 6 },
   emptySub: { textAlign: 'center', lineHeight: 18 },
   slotItem: {
-    flexDirection: 'row', alignItems: 'center', gap: 12,
+    flexDirection: 'row', alignItems: 'center', gap: 10,
     paddingVertical: 11, paddingHorizontal: 15,
     borderRadius: 16, marginBottom: 7,
     borderWidth: 0.5, borderColor: colors.border,
   },
+  slotMain: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 12 },
   slotTime: { fontSize: 14, fontWeight: '700', minWidth: 68 },
-  slotName: { flex: 1, fontSize: 13 },
+  slotName: { fontSize: 13, color: colors.text },
+  joinBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: colors.teal, borderRadius: 10,
+    paddingVertical: 7, paddingHorizontal: 12,
+  },
+  joinBtnText: { fontSize: 12, fontWeight: '700', color: colors.background },
   availRow: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     paddingVertical: 10, paddingHorizontal: 15,

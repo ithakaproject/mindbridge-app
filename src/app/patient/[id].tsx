@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { ScrollView, View, Pressable, TextInput, StyleSheet, ActivityIndicator } from 'react-native';
+import { ScrollView, View, Pressable, TextInput, StyleSheet, ActivityIndicator, Linking } from 'react-native';
 import { useLocalSearchParams, router, useFocusEffect } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { ThemedText } from '@/components/themed-text';
@@ -65,7 +65,7 @@ type MoodEntry = {
 type NextSession = {
   id: string;
   start_time: string;
-  meeting_link: string | null;
+  meet_link: string | null;
 };
 
 type AssignedQuestion = { question_key: string };
@@ -93,22 +93,28 @@ export default function PatientDetailScreen() {
   async function loadData() {
     setLoading(true);
 
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user || !patientId) return;
+    const { data: { session } } = await supabase.auth.getSession();
+    const user = session?.user;
+    if (!user || !patientId) {
+      setLoading(false);
+      return;
+    }
     setPsychId(user.id);
 
     // Fetch patient profile + patient_profiles
-    const { data: profile } = await supabase
+    const { data: profile, error: profileError } = await supabase
       .from('profiles')
       .select('full_name')
       .eq('id', patientId)
       .single();
+    if (profileError) console.warn('PROFILE ERROR:', profileError.message);
 
-    const { data: patientProfile } = await supabase
+    const { data: patientProfile, error: patientProfileError } = await supabase
       .from('patient_profiles')
       .select('flag, notes, journal_access')
       .eq('id', patientId)
       .single();
+    if (patientProfileError) console.warn('PATIENT PROFILE ERROR:', patientProfileError.message);
 
     setPatient({
       id: patientId,
@@ -119,52 +125,58 @@ export default function PatientDetailScreen() {
     });
 
     // Fetch assignments
-    const { data: assignData } = await supabase
+    const { data: assignData, error: assignError } = await supabase
       .from('assignments')
       .select('id, title, sub, icon, done')
       .eq('patient_id', patientId)
       .order('created_at', { ascending: false });
+    if (assignError) console.warn('ASSIGNMENTS ERROR:', assignError.message);
     setAssignments((assignData as AssignmentRow[]) ?? []);
 
     // Fetch mood scores
-    const { data: moodData } = await supabase
+    const { data: moodData, error: moodError } = await supabase
       .from('journal_entries')
       .select('mood_score, created_at')
       .eq('patient_id', patientId)
       .not('mood_score', 'is', null)
       .order('created_at', { ascending: false })
       .limit(8);
+    if (moodError) console.warn('MOOD SCORES ERROR:', moodError.message);
     setMoodScores(
       ((moodData as MoodEntry[]) ?? [])
         .reverse()
         .map((e) => e.mood_score)
     );
 
-    // Fetch next session
+    // Fetch next session — using meet_link (the column bookings actually
+    // fill in) instead of the legacy, never-wired-up meeting_link column.
     const now = new Date().toISOString();
-    const { data: sessData } = await supabase
+    const { data: sessData, error: sessError } = await supabase
       .from('sessions')
-      .select('id, start_time, meeting_link')
+      .select('id, start_time, meet_link')
       .eq('patient_id', patientId)
       .eq('psychologist_id', user.id)
       .gte('start_time', now)
       .order('start_time')
       .limit(1)
-      .single();
+      .maybeSingle();
+    if (sessError) console.warn('NEXT SESSION ERROR:', sessError.message);
     setNextSession((sessData as NextSession) ?? null);
 
     // Fetch assigned journal questions
-    const { data: assignedQData } = await supabase
+    const { data: assignedQData, error: assignedQError } = await supabase
       .from('assigned_journal_questions')
       .select('question_key')
       .eq('patient_id', patientId);
+    if (assignedQError) console.warn('ASSIGNED QUESTIONS ERROR:', assignedQError.message);
     setAssignedQuestions((assignedQData as AssignedQuestion[])?.map((q) => q.question_key) ?? []);
 
     // Fetch custom journal questions
-    const { data: customQData } = await supabase
+    const { data: customQData, error: customQError } = await supabase
       .from('custom_journal_questions')
       .select('id, question')
       .eq('patient_id', patientId);
+    if (customQError) console.warn('CUSTOM QUESTIONS ERROR:', customQError.message);
     setCustomQuestions((customQData as CustomQuestion[]) ?? []);
 
     setLoading(false);
@@ -182,10 +194,14 @@ export default function PatientDetailScreen() {
     console.log('open journal viewer for', patientId);
   };
 
+  const openMeetLink = (link: string) => {
+    Linking.openURL(link);
+  };
+
   async function handleAssignSend(template: AssignmentTemplate) {
     if (!patientId || !psychId) return;
 
-    const { data: newAssign } = await supabase
+    const { data: newAssign, error } = await supabase
       .from('assignments')
       .insert({
         patient_id: patientId,
@@ -198,10 +214,13 @@ export default function PatientDetailScreen() {
       .select()
       .single();
 
-    if (newAssign) {
-      setAssignments((prev) => [newAssign as AssignmentRow, ...prev]);
+    if (error || !newAssign) {
+      console.warn('ASSIGNMENT SEND ERROR:', error?.message);
+      setAssignModalOpen(false);
+      return;
     }
 
+    setAssignments((prev) => [newAssign as AssignmentRow, ...prev]);
     setAssignModalOpen(false);
     setSuccessInfo({
       icon: '📋',
@@ -213,10 +232,15 @@ export default function PatientDetailScreen() {
   async function saveNotes() {
     if (!patientId) return;
 
-    await supabase
+    const { error } = await supabase
       .from('patient_profiles')
       .update({ notes: draftNote.trim() })
       .eq('id', patientId);
+
+    if (error) {
+      console.warn('SAVE NOTES ERROR:', error.message);
+      return;
+    }
 
     setPatient((prev) => prev ? { ...prev, notes: draftNote.trim() } : prev);
     setNotesModalOpen(false);
@@ -228,16 +252,24 @@ export default function PatientDetailScreen() {
     const isOn = assignedQuestions.includes(key);
 
     if (isOn) {
-      await supabase
+      const { error } = await supabase
         .from('assigned_journal_questions')
         .delete()
         .eq('patient_id', patientId)
         .eq('question_key', key);
+      if (error) {
+        console.warn('REMOVE QUESTION ERROR:', error.message);
+        return;
+      }
       setAssignedQuestions((prev) => prev.filter((k) => k !== key));
     } else {
-      await supabase
+      const { error } = await supabase
         .from('assigned_journal_questions')
         .insert({ patient_id: patientId, question_key: key });
+      if (error) {
+        console.warn('ADD QUESTION ERROR:', error.message);
+        return;
+      }
       setAssignedQuestions((prev) => [...prev, key]);
     }
   }
@@ -246,20 +278,27 @@ export default function PatientDetailScreen() {
     const text = newCustomQuestion.trim();
     if (!text || !patientId) return;
 
-    const { data: newQ } = await supabase
+    const { data: newQ, error } = await supabase
       .from('custom_journal_questions')
       .insert({ patient_id: patientId, question: text })
       .select()
       .single();
 
-    if (newQ) {
-      setCustomQuestions((prev) => [...prev, newQ as CustomQuestion]);
+    if (error || !newQ) {
+      console.warn('ADD CUSTOM QUESTION ERROR:', error?.message);
+      return;
     }
+
+    setCustomQuestions((prev) => [...prev, newQ as CustomQuestion]);
     setNewCustomQuestion('');
   }
 
   async function removeCustomQuestion(id: string) {
-    await supabase.from('custom_journal_questions').delete().eq('id', id);
+    const { error } = await supabase.from('custom_journal_questions').delete().eq('id', id);
+    if (error) {
+      console.warn('REMOVE CUSTOM QUESTION ERROR:', error.message);
+      return;
+    }
     setCustomQuestions((prev) => prev.filter((q) => q.id !== id));
   }
 
@@ -361,12 +400,12 @@ export default function PatientDetailScreen() {
               </View>
             </Pressable>
 
-            {linkRevealed && nextSession.meeting_link && (
+            {linkRevealed && nextSession.meet_link && (
               <View style={styles.linkCard}>
                 <Ionicons name="videocam" size={17} color={colors.teal} />
-                <ThemedText style={styles.linkText}>{nextSession.meeting_link}</ThemedText>
-                <Pressable style={styles.linkBtn}>
-                  <ThemedText type="small" style={styles.linkBtnText}>Start</ThemedText>
+                <ThemedText style={styles.linkText}>{nextSession.meet_link}</ThemedText>
+                <Pressable onPress={() => openMeetLink(nextSession.meet_link!)} style={styles.linkBtn}>
+                  <ThemedText type="small" style={styles.linkBtnText}>Join</ThemedText>
                 </Pressable>
               </View>
             )}

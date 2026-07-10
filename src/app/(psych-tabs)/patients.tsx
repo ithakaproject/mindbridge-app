@@ -73,14 +73,22 @@ export default function PatientsScreen() {
   async function loadPatients() {
     setLoading(true);
 
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
+    const { data: { session } } = await supabase.auth.getSession();
+    const user = session?.user;
+    if (!user) {
+      setLoading(false);
+      return;
+    }
 
     // Fetch all patients assigned to this psychologist
-    const { data: patientProfiles } = await supabase
+    const { data: patientProfiles, error: patientProfilesError } = await supabase
       .from('patient_profiles')
       .select('id, flag, notes')
       .eq('psychologist_id', user.id);
+
+    if (patientProfilesError) {
+      console.warn('PATIENT PROFILES ERROR:', patientProfilesError.message);
+    }
 
     if (!patientProfiles || patientProfiles.length === 0) {
       setPatients([]);
@@ -91,40 +99,39 @@ export default function PatientsScreen() {
     const patientIds = patientProfiles.map((p) => p.id);
 
     // Fetch profile names
-    const { data: profiles } = await supabase
+    const { data: profiles, error: profilesError } = await supabase
       .from('profiles')
       .select('id, full_name')
       .in('id', patientIds);
+    if (profilesError) console.warn('PROFILES ERROR:', profilesError.message);
 
     // Fetch next upcoming session per patient
     const now = new Date().toISOString();
-    const { data: sessions } = await supabase
+    const { data: sessions, error: sessionsError } = await supabase
       .from('sessions')
       .select('patient_id, start_time')
       .eq('psychologist_id', user.id)
       .gte('start_time', now)
       .order('start_time');
+    if (sessionsError) console.warn('SESSIONS ERROR:', sessionsError.message);
 
-    // Fetch latest chat message per patient
-    const { data: messages } = await supabase
+    // Fetch latest chat message per patient — chat_messages already has a
+    // real patient_id column, so this is a direct query with no nested
+    // subquery through sessions, and no incorrect column aliasing.
+    const { data: messages, error: messagesError } = await supabase
       .from('chat_messages')
-      .select('sender, body, created_at, patient_id:session_id')
-      .in('session_id',
-        (await supabase
-          .from('sessions')
-          .select('id')
-          .in('patient_id', patientIds)
-          .eq('psychologist_id', user.id)
-        ).data?.map((s) => s.id) ?? []
-      )
+      .select('patient_id, sender, body, created_at')
+      .in('patient_id', patientIds)
       .order('created_at', { ascending: false });
+    if (messagesError) console.warn('MESSAGES ERROR:', messagesError.message);
 
     // Fetch pending assignments per patient
-    const { data: assignments } = await supabase
+    const { data: assignments, error: assignmentsError } = await supabase
       .from('assignments')
       .select('patient_id, done')
       .in('patient_id', patientIds)
       .eq('done', false);
+    if (assignmentsError) console.warn('ASSIGNMENTS ERROR:', assignmentsError.message);
 
     // Build a map for quick lookups
     const profileMap = Object.fromEntries((profiles ?? []).map((p) => [p.id, p]));
