@@ -54,6 +54,7 @@ export default function ChatScreen() {
   const [draft, setDraft] = useState('');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState('');
   const [assignModalOpen, setAssignModalOpen] = useState(false);
   const [successOpen, setSuccessOpen] = useState(false);
 
@@ -63,7 +64,10 @@ export default function ChatScreen() {
     setLoading(true);
 
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user || !patientId) return;
+    if (!user || !patientId) {
+      setLoading(false);
+      return;
+    }
     setPsychId(user.id);
 
     // Fetch patient profile
@@ -113,9 +117,9 @@ export default function ChatScreen() {
     const text = draft.trim();
     if (!text || !sessionId || !psychId || sending) return;
     setSending(true);
-    setDraft('');
+    setSendError('');
 
-    const { data: newMsg } = await supabase
+    const { data: newMsg, error } = await supabase
       .from('chat_messages')
       .insert({
         session_id: sessionId,
@@ -126,19 +130,24 @@ export default function ChatScreen() {
       .select()
       .single();
 
-    if (newMsg) {
-      setMessages((prev) => [...prev, newMsg as ChatMessage]);
-      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
+    if (error || !newMsg) {
+      setSendError(error?.message ?? 'Message failed to send. Please try again.');
+      setSending(false);
+      return;
     }
 
+    setDraft('');
+    setMessages((prev) => [...prev, newMsg as ChatMessage]);
+    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
     setSending(false);
   }
 
   async function handleAssignSend(template: AssignmentTemplate) {
     if (!patientId || !psychId) return;
+    setSendError('');
 
     // Insert assignment into assignments table
-    const { data: assignment } = await supabase
+    const { data: assignment, error: assignmentError } = await supabase
       .from('assignments')
       .insert({
         patient_id: patientId,
@@ -151,9 +160,15 @@ export default function ChatScreen() {
       .select()
       .single();
 
+    if (assignmentError || !assignment) {
+      setSendError(assignmentError?.message ?? 'Failed to send assignment. Please try again.');
+      setAssignModalOpen(false);
+      return;
+    }
+
     // Send a chat message referencing the assignment
-    if (assignment && sessionId) {
-      const { data: newMsg } = await supabase
+    if (sessionId) {
+      const { data: newMsg, error: msgError } = await supabase
         .from('chat_messages')
         .insert({
           session_id: sessionId,
@@ -165,7 +180,9 @@ export default function ChatScreen() {
         .select()
         .single();
 
-      if (newMsg) {
+      if (msgError || !newMsg) {
+        setSendError(msgError?.message ?? 'Assignment created, but the chat message failed to send.');
+      } else {
         setMessages((prev) => [...prev, newMsg as ChatMessage]);
         setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
       }
@@ -272,6 +289,14 @@ export default function ChatScreen() {
         <View style={styles.noSessionBanner}>
           <ThemedText type="small" themeColor="textTertiary">
             No session found with this patient yet.
+          </ThemedText>
+        </View>
+      )}
+
+      {sendError !== '' && (
+        <View style={styles.noSessionBanner}>
+          <ThemedText type="small" themeColor="error">
+            {sendError}
           </ThemedText>
         </View>
       )}

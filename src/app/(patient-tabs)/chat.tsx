@@ -27,6 +27,7 @@ export default function PatientChatScreen() {
   const [pane, setPane] = useState<'psych' | 'ai'>('psych');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState('');
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [psychDraft, setPsychDraft] = useState('');
@@ -50,7 +51,10 @@ export default function PatientChatScreen() {
     setLoading(true);
 
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
+    if (!user) {
+      setLoading(false);
+      return;
+    }
     setPatientId(user.id);
 
     // Get psychologist info
@@ -115,9 +119,9 @@ export default function PatientChatScreen() {
     const text = psychDraft.trim();
     if (!text || !sessionId || !patientId || sending) return;
     setSending(true);
-    setPsychDraft('');
+    setSendError('');
 
-    const { data: newMsg } = await supabase
+    const { data: newMsg, error } = await supabase
       .from('chat_messages')
       .insert({
         session_id: sessionId,
@@ -128,11 +132,17 @@ export default function PatientChatScreen() {
       .select()
       .single();
 
-    if (newMsg) {
-      setMessages((prev) => [...prev, newMsg as ChatMessage]);
-      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
+    if (error || !newMsg) {
+      // Keep the draft text so nothing is silently lost — the person can
+      // see exactly what failed to send and retry.
+      setSendError(error?.message ?? 'Message failed to send. Please try again.');
+      setSending(false);
+      return;
     }
 
+    setPsychDraft('');
+    setMessages((prev) => [...prev, newMsg as ChatMessage]);
+    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
     setSending(false);
   }
 
@@ -233,6 +243,14 @@ export default function PatientChatScreen() {
             <View style={styles.noSessionBanner}>
               <ThemedText type="small" themeColor="textTertiary">
                 You need a scheduled session to start messaging.
+              </ThemedText>
+            </View>
+          )}
+
+          {sendError !== '' && (
+            <View style={styles.errorBanner}>
+              <ThemedText type="small" themeColor="error">
+                {sendError}
               </ThemedText>
             </View>
           )}
@@ -374,6 +392,11 @@ const styles = StyleSheet.create({
   emptyChat: { textAlign: 'center', marginTop: 40 },
   noSessionBanner: {
     padding: 12, alignItems: 'center',
+    backgroundColor: colors.backgroundElement,
+    borderTopWidth: 0.5, borderTopColor: colors.border,
+  },
+  errorBanner: {
+    paddingHorizontal: 14, paddingVertical: 8,
     backgroundColor: colors.backgroundElement,
     borderTopWidth: 0.5, borderTopColor: colors.border,
   },
