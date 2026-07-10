@@ -49,8 +49,8 @@ type TagColor = 'rose' | 'teal' | 'gold' | 'amber' | 'green' | 'textTertiary';
 type SessionRow = {
   id: string;
   start_time: string;
-  duration: number;
-  meeting_link: string | null;
+  duration_minutes: number;
+  meet_link: string | null;
   psychologist_name: string;
 };
 
@@ -61,24 +61,6 @@ type AssignmentRow = {
   icon: 'clipboard-outline' | 'sparkles-outline' | 'pencil' | 'videocam-outline';
   done: boolean;
 };
-
-// Courses are still placeholder — no courses table yet
-const COURSES = [
-  {
-    emoji: '❤️',
-    title: 'Self Love',
-    pct: 70,
-    sub: 'Module 5 of 7 · 1 left this week',
-    desc: 'Building self-compassion practices for daily life.',
-  },
-  {
-    emoji: '🧠',
-    title: 'Anxiety Management',
-    pct: 35,
-    sub: 'Module 3 of 8 · 2 new lessons',
-    desc: 'Understanding the cognitive model of anxiety.',
-  },
-];
 
 export default function PatientHomeScreen() {
   const [patientName, setPatientName] = useState('');
@@ -132,7 +114,7 @@ export default function PatientHomeScreen() {
     const now = new Date().toISOString();
     const { data: sessData } = await supabase
       .from('sessions')
-      .select('id, start_time, duration, meeting_link')
+      .select('id, start_time, duration_minutes, meet_link')
       .eq('patient_id', user.id)
       .gte('start_time', now)
       .order('start_time')
@@ -215,7 +197,6 @@ export default function PatientHomeScreen() {
       return;
     }
 
-    // Check if there's already a check-in today
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
 
@@ -228,7 +209,6 @@ export default function PatientHomeScreen() {
       .single();
 
     if (existing) {
-      // Update today's entry
       await supabase
         .from('journal_entries')
         .update({
@@ -238,7 +218,6 @@ export default function PatientHomeScreen() {
         })
         .eq('id', existing.id);
     } else {
-      // Create new entry
       await supabase
         .from('journal_entries')
         .insert({
@@ -297,7 +276,7 @@ export default function PatientHomeScreen() {
                 <ThemedText style={styles.focusEyebrow}>NEXT SESSION</ThemedText>
                 <ThemedText style={styles.focusTitle}>{nextSession.psychologist_name}</ThemedText>
                 <ThemedText style={styles.focusSub}>
-                  {formatSessionTime(nextSession.start_time)} · {nextSession.duration} min
+                  {formatSessionTime(nextSession.start_time)} · {nextSession.duration_minutes} min
                 </ThemedText>
               </LinearGradient>
               <View style={styles.focusAction}>
@@ -308,10 +287,10 @@ export default function PatientHomeScreen() {
               </View>
             </Pressable>
 
-            {linkRevealed && nextSession.meeting_link && (
+            {linkRevealed && nextSession.meet_link && (
               <View style={styles.linkCard}>
                 <Ionicons name="videocam" size={18} color={colors.teal} />
-                <ThemedText style={styles.linkText}>{nextSession.meeting_link}</ThemedText>
+                <ThemedText style={styles.linkText}>{nextSession.meet_link}</ThemedText>
                 <Pressable style={styles.linkBtn}>
                   <ThemedText type="small" style={styles.linkBtnText}>Join</ThemedText>
                 </Pressable>
@@ -462,26 +441,16 @@ export default function PatientHomeScreen() {
           ))
         )}
 
-        {/* Courses — placeholder until courses table exists */}
+        {/* Courses — MindSpa integration not yet connected */}
         <View style={styles.secLabelRow}>
           <ThemedText style={styles.secMain}>Your courses</ThemedText>
-          <ThemedText type="small" themeColor="teal">Browse</ThemedText>
         </View>
-        {COURSES.map((c, i) => (
-          <View key={i} style={styles.progItem}>
-            <View style={styles.progHeader}>
-              <ThemedText style={styles.progIcon}>{c.emoji}</ThemedText>
-              <ThemedText style={styles.progTitle}>{c.title}</ThemedText>
-              <ThemedText themeColor="gold" style={styles.progPct}>{c.pct}%</ThemedText>
-            </View>
-            <View style={styles.progBar}>
-              <View style={[styles.progFill, { width: `${c.pct}%` }]} />
-            </View>
-            <ThemedText type="small" themeColor="textTertiary" style={styles.progSub}>
-              {c.sub}
-            </ThemedText>
-          </View>
-        ))}
+        <ThemedView type="backgroundElement" style={styles.coursesComingSoon}>
+          <Ionicons name="school-outline" size={22} color={colors.textTertiary} style={{ marginBottom: 6 }} />
+          <ThemedText themeColor="textSecondary" style={{ textAlign: 'center' }}>
+            MindSpa course integration is coming soon.
+          </ThemedText>
+        </ThemedView>
       </ScrollView>
     </ThemedView>
   );
@@ -575,16 +544,8 @@ const styles = StyleSheet.create({
   rowSub: { marginTop: 2 },
   tag: { paddingVertical: 3, paddingHorizontal: 9, borderRadius: 10 },
   tagText: { fontSize: 10.5, fontWeight: '700' },
-  progItem: {
-    backgroundColor: colors.backgroundElement, borderRadius: 16,
-    padding: 14, marginBottom: 7,
-    borderWidth: 0.5, borderColor: colors.border,
+  coursesComingSoon: {
+    borderRadius: 16, padding: Spacing.four, alignItems: 'center',
+    borderWidth: 0.5, borderColor: colors.border, marginBottom: Spacing.two,
   },
-  progHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 9 },
-  progIcon: { fontSize: 17 },
-  progTitle: { fontSize: 13.5, fontWeight: '600', color: colors.text, flex: 1 },
-  progPct: { fontSize: 12.5, fontWeight: '700' },
-  progBar: { height: 4, backgroundColor: 'rgba(255,255,255,0.07)', borderRadius: 2, overflow: 'hidden' },
-  progFill: { height: '100%', backgroundColor: colors.gold, borderRadius: 2 },
-  progSub: { marginTop: 6 },
 });

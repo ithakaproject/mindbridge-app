@@ -1,5 +1,5 @@
 import { useMemo, useState, useCallback } from 'react';
-import { ScrollView, View, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
+import { ScrollView, View, Pressable, StyleSheet, ActivityIndicator, Linking } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { router, useFocusEffect } from 'expo-router';
 import { ThemedText } from '@/components/themed-text';
@@ -60,7 +60,8 @@ type AvailabilityRow = {
 type SessionRow = {
   id: string;
   start_time: string;
-  duration: number;
+  duration_minutes: number;
+  meet_link: string | null;
 };
 
 export default function ScheduleScreen() {
@@ -74,6 +75,8 @@ export default function ScheduleScreen() {
   const [successOpen, setSuccessOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [booking, setBooking] = useState(false);
+  const [bookingError, setBookingError] = useState('');
+  const [bookedMeetLink, setBookedMeetLink] = useState<string | null>(null);
 
   const [psychologistId, setPsychologistId] = useState<string | null>(null);
   const [psychologistName, setPsychologistName] = useState('Your psychologist');
@@ -92,8 +95,12 @@ export default function ScheduleScreen() {
   async function loadData() {
     setLoading(true);
 
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
+    const { data: { session } } = await supabase.auth.getSession();
+    const user = session?.user;
+    if (!user) {
+      setLoading(false);
+      return;
+    }
     setPatientId(user.id);
 
     // Get psychologist id
@@ -130,7 +137,7 @@ export default function ScheduleScreen() {
     const monthEnd = new Date(viewYear, viewMonth + 1, 0, 23, 59, 59).toISOString();
     const { data: sessData } = await supabase
       .from('sessions')
-      .select('id, start_time, duration')
+      .select('id, start_time, duration_minutes, meet_link')
       .eq('patient_id', user.id)
       .gte('start_time', monthStart)
       .lte('start_time', monthEnd);
@@ -170,6 +177,15 @@ export default function ScheduleScreen() {
   const selectedKey = selectedDay != null ? dateKey(viewYear, viewMonth, selectedDay) : null;
   const isSelectedBooked = selectedKey ? bookedDateKeys.has(selectedKey) : false;
 
+  // Find the actual booked session for the selected day, so we can show its Join link
+  const selectedBookedSession = useMemo(() => {
+    if (!selectedKey) return null;
+    return bookedSessions.find((s) => {
+      const d = new Date(s.start_time);
+      return dateKey(d.getFullYear(), d.getMonth(), d.getDate()) === selectedKey;
+    }) ?? null;
+  }, [selectedKey, bookedSessions]);
+
   // Get slots for selected day
   const selectedSlots = useMemo(() => {
     if (selectedDay == null) return [];
@@ -180,6 +196,7 @@ export default function ScheduleScreen() {
   }, [selectedDay, availability, viewYear, viewMonth]);
 
   const pickSlot = (time: string) => {
+    setBookingError('');
     setPickedTime(time);
     setConfirmOpen(true);
   };
@@ -187,6 +204,7 @@ export default function ScheduleScreen() {
   async function confirmBooking() {
     if (!selectedDay || !pickedTime || !psychologistId || !patientId) return;
     setBooking(true);
+    setBookingError('');
 
     // Parse picked time into ISO
     const [timePart, period] = pickedTime.split(' ');
@@ -196,28 +214,61 @@ export default function ScheduleScreen() {
 
     const sessionDate = new Date(viewYear, viewMonth, selectedDay, hours, minutes, 0);
 
-    const { error } = await supabase
+    const { data: insertedSession, error } = await supabase
       .from('sessions')
       .insert({
         patient_id: patientId,
         psychologist_id: psychologistId,
         start_time: sessionDate.toISOString(),
-        duration: 50,
-        status: 'scheduled',
-      });
+        duration_minutes: 50,
+        status: 'booked',
+      })
+      .select('id, start_time, duration_minutes, meet_link')
+      .single();
 
-    if (!error) {
-      // Add to local booked set
-      setBookedSessions((prev) => [
-        ...prev,
-        { id: 'temp', start_time: sessionDate.toISOString(), duration: 50 },
-      ]);
+    if (error || !insertedSession) {
+      setBooking(false);
+      setBookingError(error?.message ?? 'Booking failed. Please try again.');
+      return;
     }
 
+    // Add to local booked set immediately so the calendar updates right away
+    setBookedSessions((prev) => [...prev, insertedSession as SessionRow]);
+
+    let meetLink: string | null = null;
+
+    // Ask the Edge Function to create the Google Calendar event + Meet link.
+    // This runs after the booking succeeds, so a slow/failed Meet link never
+    // blocks the booking itself from going through.
+    try {
+      const { data: fnData, error: fnError } = await supabase.functions.invoke(
+        'create-meet-link',
+        { body: { session_id: insertedSession.id } }
+      );
+
+      if (!fnError && fnData?.meet_link) {
+        meetLink = fnData.meet_link;
+        setBookedSessions((prev) =>
+          prev.map((s) =>
+            s.id === insertedSession.id ? { ...s, meet_link: meetLink } : s
+          )
+        );
+      } else if (fnError) {
+        console.warn('Meet link creation failed:', fnError);
+      }
+    } catch (fnErr) {
+      console.warn('Meet link creation failed:', fnErr);
+    }
+
+    setBookedMeetLink(meetLink);
     setBooking(false);
     setConfirmOpen(false);
     setSuccessOpen(true);
   }
+
+  const openMeetLink = (link: string) => {
+    Linking.openURL(link);
+  };
 
   if (loading) {
     return (
@@ -331,9 +382,20 @@ export default function ScheduleScreen() {
 
         {isSelectedBooked && (
           <View style={styles.bookedSlot}>
-            <ThemedText style={styles.bookedSlotTime}>Booked</ThemedText>
-            <ThemedText style={styles.slotDoc}>{psychologistName}</ThemedText>
-            <ThemedText style={styles.bookedLabel}>Confirmed ✓</ThemedText>
+            <View style={{ flex: 1 }}>
+              <ThemedText style={styles.bookedSlotTime}>Booked</ThemedText>
+              <ThemedText style={styles.slotDoc}>{psychologistName}</ThemedText>
+            </View>
+            {selectedBookedSession?.meet_link ? (
+              <Pressable
+                onPress={() => openMeetLink(selectedBookedSession.meet_link!)}
+                style={styles.joinBtn}>
+                <Ionicons name="videocam" size={14} color={colors.background} />
+                <ThemedText style={styles.joinBtnText}>Join Session</ThemedText>
+              </Pressable>
+            ) : (
+              <ThemedText style={styles.bookedLabel}>Confirmed ✓</ThemedText>
+            )}
           </View>
         )}
 
@@ -376,6 +438,11 @@ export default function ScheduleScreen() {
             {psychologistName} · 50 min · Video session
           </ThemedText>
         </View>
+        {bookingError !== '' && (
+          <ThemedText type="small" themeColor="error" style={{ marginTop: 8 }}>
+            {bookingError}
+          </ThemedText>
+        )}
       </BottomSheetModal>
 
       <SuccessModal
@@ -454,6 +521,12 @@ const styles = StyleSheet.create({
   },
   bookedSlotTime: { fontSize: 14, fontWeight: '700', color: colors.gold, minWidth: 72 },
   bookedLabel: { fontSize: 11, color: colors.gold, fontWeight: '600' },
+  joinBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: colors.teal, borderRadius: 10,
+    paddingVertical: 7, paddingHorizontal: 12,
+  },
+  joinBtnText: { fontSize: 12, fontWeight: '700', color: colors.background },
   confirmCard: {
     backgroundColor: `${colors.teal}1A`,
     borderWidth: 0.5, borderColor: `${colors.teal}38`,

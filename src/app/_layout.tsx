@@ -8,6 +8,7 @@ import {
   Inter_800ExtraBold,
 } from '@expo-google-fonts/inter';
 import { useEffect } from 'react';
+import { Platform } from 'react-native';
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { supabase } from '@/lib/supabase';
 
@@ -24,7 +25,6 @@ export default function RootLayout() {
     async function checkSession() {
       try {
         const { data: { session } } = await supabase.auth.getSession();
-
         if (session?.user) {
           const { data: profile } = await supabase
             .from('profiles')
@@ -42,13 +42,22 @@ export default function RootLayout() {
         console.warn('Auth check failed:', e);
       }
     }
-
     checkSession();
 
     const { data: listener } = supabase.auth.onAuthStateChange(
       async (event) => {
         if (event === 'SIGNED_OUT') {
-          router.replace('/');
+          // router.replace('/') is unreliable when called from deep inside
+          // a nested tab group (e.g. (patient-tabs) or (psych-tabs)) — Expo
+          // Router can resolve '/' ambiguously against the group's own
+          // index route instead of the true root, leaving the user stuck
+          // on Home. A full page reload sidesteps that entirely and
+          // matches what a manual browser refresh already does reliably.
+          if (Platform.OS === 'web') {
+            window.location.href = '/';
+          } else {
+            router.replace('/');
+          }
         }
       }
     );

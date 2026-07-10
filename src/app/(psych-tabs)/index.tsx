@@ -44,8 +44,8 @@ function formatTime(isoString: string) {
 type SessionRow = {
   id: string;
   start_time: string;
-  duration: number;
-  meeting_link: string | null;
+  duration_minutes: number;
+  meet_link: string | null;
   patient: {
     id: string;
     full_name: string;
@@ -94,7 +94,7 @@ export default function HomeScreen() {
     // Fetch today's sessions
     const { data: todayData } = await supabase
       .from('sessions')
-      .select('id, start_time, duration, meeting_link, patient:patient_id(id, full_name)')
+      .select('id, start_time, duration_minutes, meet_link, patient:patient_id(id, full_name)')
       .eq('psychologist_id', user.id)
       .gte('start_time', todayStart.toISOString())
       .lte('start_time', todayEnd.toISOString())
@@ -104,7 +104,7 @@ export default function HomeScreen() {
     // Fetch tomorrow's sessions
     const { data: tomorrowData } = await supabase
       .from('sessions')
-      .select('id, start_time, duration, meeting_link, patient:patient_id(id, full_name)')
+      .select('id, start_time, duration_minutes, meet_link, patient:patient_id(id, full_name)')
       .eq('psychologist_id', user.id)
       .gte('start_time', tomorrowStart.toISOString())
       .lte('start_time', tomorrowEnd.toISOString())
@@ -114,7 +114,7 @@ export default function HomeScreen() {
     // Next upcoming session
     const { data: nextData } = await supabase
       .from('sessions')
-      .select('id, start_time, duration, meeting_link, patient:patient_id(id, full_name)')
+      .select('id, start_time, duration_minutes, meet_link, patient:patient_id(id, full_name)')
       .eq('psychologist_id', user.id)
       .gte('start_time', now.toISOString())
       .order('start_time')
@@ -186,7 +186,7 @@ export default function HomeScreen() {
                   {(nextSession.patient as any)?.full_name ?? 'Patient'}
                 </ThemedText>
                 <ThemedText style={styles.focusSub}>
-                  {formatTime(nextSession.start_time)} · {nextSession.duration} min
+                  {formatTime(nextSession.start_time)} · {nextSession.duration_minutes} min
                 </ThemedText>
               </LinearGradient>
               <View style={styles.focusAction}>
@@ -197,10 +197,10 @@ export default function HomeScreen() {
               </View>
             </Pressable>
 
-            {linkRevealed && nextSession.meeting_link && (
+            {linkRevealed && nextSession.meet_link && (
               <View style={styles.linkCard}>
                 <Ionicons name="videocam" size={18} color={colors.teal} />
-                <ThemedText style={styles.linkText}>{nextSession.meeting_link}</ThemedText>
+                <ThemedText style={styles.linkText}>{nextSession.meet_link}</ThemedText>
                 <Pressable style={styles.linkBtn}>
                   <ThemedText type="small" style={styles.linkBtnText}>Start</ThemedText>
                 </Pressable>

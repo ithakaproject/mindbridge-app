@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { View, Pressable, StyleSheet, ScrollView, ActivityIndicator } from 'react-native';
+import { View, Pressable, StyleSheet, ScrollView, ActivityIndicator, Platform } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import Ionicons from '@expo/vector-icons/Ionicons';
@@ -56,20 +56,17 @@ export default function PatientProfileScreen() {
       return;
     }
 
-    // Fetch base profile
     const { data: baseProfile } = await supabase
       .from('profiles')
       .select('full_name')
       .eq('id', user.id)
       .single();
 
-    // Fetch session count
     const { count: sessionCount } = await supabase
       .from('sessions')
       .select('*', { count: 'exact', head: true })
       .eq('patient_id', user.id);
 
-    // Fetch journal entry count
     const { count: entryCount } = await supabase
       .from('journal_entries')
       .select('*', { count: 'exact', head: true })
@@ -82,7 +79,6 @@ export default function PatientProfileScreen() {
       entry_count: entryCount ?? 0,
     });
 
-    // Fetch psychologist
     const { data: patientProfile } = await supabase
       .from('patient_profiles')
       .select('psychologist_id, created_at')
@@ -119,9 +115,11 @@ export default function PatientProfileScreen() {
 
   async function handleLogout() {
     await supabase.auth.signOut();
-    // Navigation is handled by the root layout's onAuthStateChange
-    // listener on SIGNED_OUT — calling router.replace here too caused
-    // two competing navigations firing at once.
+    if (Platform.OS === 'web') {
+      window.location.href = '/';
+    } else {
+      router.replace('/');
+    }
   }
 
   async function handleRematchSubmit(reason: string, details: string) {
@@ -165,46 +163,11 @@ export default function PatientProfileScreen() {
     sub?: string;
     onPress: () => void;
   }[] = [
-    {
-      key: 'personal',
-      icon: 'person-outline',
-      tint: 'gold',
-      title: 'Personal information',
-      sub: profile?.full_name,
-      onPress: () => {},
-    },
-    {
-      key: 'language',
-      icon: 'globe-outline',
-      tint: 'teal',
-      title: 'Language',
-      sub: 'English',
-      onPress: () => {},
-    },
-    {
-      key: 'notifications',
-      icon: 'notifications-outline',
-      tint: 'gold',
-      title: 'Notifications',
-      sub: 'Coming soon',
-      onPress: () => {},
-    },
-    {
-      key: 'privacy',
-      icon: 'shield-outline',
-      tint: 'rose',
-      title: 'Privacy & security',
-      sub: 'Coming soon',
-      onPress: () => {},
-    },
-    {
-      key: 'help',
-      icon: 'help-circle-outline',
-      tint: 'teal',
-      title: 'Help & support',
-      sub: 'Coming soon',
-      onPress: () => {},
-    },
+    { key: 'personal', icon: 'person-outline', tint: 'gold', title: 'Personal information', sub: profile?.full_name, onPress: () => {} },
+    { key: 'language', icon: 'globe-outline', tint: 'teal', title: 'Language', sub: 'English', onPress: () => {} },
+    { key: 'notifications', icon: 'notifications-outline', tint: 'gold', title: 'Notifications', sub: 'Coming soon', onPress: () => {} },
+    { key: 'privacy', icon: 'shield-outline', tint: 'rose', title: 'Privacy & security', sub: 'Coming soon', onPress: () => {} },
+    { key: 'help', icon: 'help-circle-outline', tint: 'teal', title: 'Help & support', sub: 'Coming soon', onPress: () => {} },
   ];
 
   const BILLING_ROWS: {
@@ -230,7 +193,6 @@ export default function PatientProfileScreen() {
         style={styles.scroll}
         contentContainerStyle={[styles.scrollContent, { paddingBottom: BottomTabInset + Spacing.four }]}>
 
-        {/* Hero card */}
         <View style={styles.hero}>
           <LinearGradient
             colors={[colors.goldDim, colors.gold]}
@@ -245,25 +207,16 @@ export default function PatientProfileScreen() {
           </ThemedText>
           <View style={styles.heroStats}>
             <View style={styles.heroStat}>
-              <ThemedText themeColor="gold" style={styles.heroStatNum}>
-                {profile?.session_count}
-              </ThemedText>
-              <ThemedText type="small" themeColor="textTertiary" style={styles.heroStatLabel}>
-                Sessions
-              </ThemedText>
+              <ThemedText themeColor="gold" style={styles.heroStatNum}>{profile?.session_count}</ThemedText>
+              <ThemedText type="small" themeColor="textTertiary" style={styles.heroStatLabel}>Sessions</ThemedText>
             </View>
             <View style={styles.heroStat}>
-              <ThemedText themeColor="gold" style={styles.heroStatNum}>
-                {profile?.entry_count}
-              </ThemedText>
-              <ThemedText type="small" themeColor="textTertiary" style={styles.heroStatLabel}>
-                Entries
-              </ThemedText>
+              <ThemedText themeColor="gold" style={styles.heroStatNum}>{profile?.entry_count}</ThemedText>
+              <ThemedText type="small" themeColor="textTertiary" style={styles.heroStatLabel}>Entries</ThemedText>
             </View>
           </View>
         </View>
 
-        {/* My psychologist */}
         <ThemedText style={styles.secLabel}>My psychologist</ThemedText>
         <View style={styles.psychCard}>
           {psychologist ? (
@@ -307,9 +260,7 @@ export default function PatientProfileScreen() {
                 </Pressable>
                 <Pressable style={styles.psychActionBtn}>
                   <Ionicons name="videocam-outline" size={15} color={colors.textSecondary} />
-                  <ThemedText style={[styles.psychActionText, { color: colors.textSecondary }]}>
-                    Join call
-                  </ThemedText>
+                  <ThemedText style={[styles.psychActionText, { color: colors.textSecondary }]}>Join call</ThemedText>
                 </Pressable>
               </View>
 
@@ -326,7 +277,6 @@ export default function PatientProfileScreen() {
           )}
         </View>
 
-        {/* Account */}
         <ThemedText style={[styles.secLabel, { marginTop: 4 }]}>Account</ThemedText>
         {ACCOUNT_ROWS.map((row) => (
           <Pressable key={row.key} onPress={row.onPress}>
@@ -337,9 +287,7 @@ export default function PatientProfileScreen() {
               <View style={styles.rowInfo}>
                 <ThemedText style={styles.rowTitle}>{row.title}</ThemedText>
                 {row.sub && (
-                  <ThemedText type="small" themeColor="textSecondary" style={styles.rowSub}>
-                    {row.sub}
-                  </ThemedText>
+                  <ThemedText type="small" themeColor="textSecondary" style={styles.rowSub}>{row.sub}</ThemedText>
                 )}
               </View>
               <Ionicons name="chevron-forward" size={15} color={colors.textTertiary} />
@@ -347,21 +295,16 @@ export default function PatientProfileScreen() {
           </Pressable>
         ))}
 
-        {/* Billing */}
         <ThemedText style={[styles.secLabel, { marginTop: 4 }]}>Billing & payments</ThemedText>
         {BILLING_ROWS.map((row) => (
           <Pressable key={row.key} onPress={row.onPress}>
-            <ThemedView
-              type="backgroundElement"
-              style={[styles.rowItem, row.highlight && styles.rowItemHighlight]}>
+            <ThemedView type="backgroundElement" style={[styles.rowItem, row.highlight && styles.rowItemHighlight]}>
               <View style={[styles.riWrap, { backgroundColor: TINT_BG.gold }]}>
                 <Ionicons name={row.icon} size={17} color={colors.gold} />
               </View>
               <View style={styles.rowInfo}>
                 <ThemedText style={styles.rowTitle}>{row.title}</ThemedText>
-                <ThemedText
-                  type="small"
-                  style={[styles.rowSub, row.highlight && { color: colors.gold, fontWeight: '600' }]}>
+                <ThemedText type="small" style={[styles.rowSub, row.highlight && { color: colors.gold, fontWeight: '600' }]}>
                   {row.sub}
                 </ThemedText>
               </View>
@@ -370,7 +313,6 @@ export default function PatientProfileScreen() {
           </Pressable>
         ))}
 
-        {/* Log out */}
         <Pressable onPress={handleLogout} style={styles.logoutBtn}>
           <Ionicons name="log-out-outline" size={18} color={colors.rose} />
           <ThemedText type="smallBold" themeColor="rose">Log out</ThemedText>
@@ -390,22 +332,12 @@ const styles = StyleSheet.create({
   screen: { flex: 1 },
   topBarRow: { position: 'relative' },
   scroll: { flex: 1 },
-  scrollContent: {
-    alignSelf: 'center',
-    width: '100%',
-    maxWidth: MaxContentWidth,
-    paddingHorizontal: Spacing.three,
-  },
+  scrollContent: { alignSelf: 'center', width: '100%', maxWidth: MaxContentWidth, paddingHorizontal: Spacing.three },
   hero: {
-    backgroundColor: colors.backgroundSelected,
-    borderRadius: 22, paddingVertical: 20, paddingHorizontal: 20,
-    alignItems: 'center', marginBottom: 14,
-    borderWidth: 0.5, borderColor: colors.border,
+    backgroundColor: colors.backgroundSelected, borderRadius: 22, paddingVertical: 20, paddingHorizontal: 20,
+    alignItems: 'center', marginBottom: 14, borderWidth: 0.5, borderColor: colors.border,
   },
-  heroAvatar: {
-    width: 66, height: 66, borderRadius: 33,
-    alignItems: 'center', justifyContent: 'center', marginBottom: 10,
-  },
+  heroAvatar: { width: 66, height: 66, borderRadius: 33, alignItems: 'center', justifyContent: 'center', marginBottom: 10 },
   heroAvatarText: { fontSize: 22, fontWeight: '800', color: colors.background },
   heroName: { fontSize: 17, fontWeight: '800', letterSpacing: -0.4, color: colors.text },
   heroEmail: { marginTop: 3 },
@@ -413,50 +345,32 @@ const styles = StyleSheet.create({
   heroStat: { alignItems: 'center' },
   heroStatNum: { fontSize: 19, fontWeight: '800', letterSpacing: -0.5 },
   heroStatLabel: { marginTop: 2 },
-  secLabel: {
-    fontSize: 10.5, fontWeight: '700', color: colors.textTertiary,
-    textTransform: 'uppercase', letterSpacing: 1.1, paddingBottom: 8,
-  },
-  psychCard: {
-    backgroundColor: colors.backgroundElement,
-    borderRadius: 18, padding: 15, marginBottom: 14,
-    borderWidth: 0.5, borderColor: colors.border,
-  },
+  secLabel: { fontSize: 10.5, fontWeight: '700', color: colors.textTertiary, textTransform: 'uppercase', letterSpacing: 1.1, paddingBottom: 8 },
+  psychCard: { backgroundColor: colors.backgroundElement, borderRadius: 18, padding: 15, marginBottom: 14, borderWidth: 0.5, borderColor: colors.border },
   psychInner: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  psychAvatar: {
-    width: 46, height: 46, borderRadius: 23,
-    alignItems: 'center', justifyContent: 'center',
-  },
+  psychAvatar: { width: 46, height: 46, borderRadius: 23, alignItems: 'center', justifyContent: 'center' },
   psychAvatarText: { fontSize: 14, fontWeight: '700', color: '#fff' },
   psychName: { fontSize: 14, fontWeight: '700', color: colors.text },
   psychSpec: { marginTop: 2 },
   psychSince: { marginTop: 2 },
-  activeBadge: {
-    backgroundColor: `${colors.green}2E`,
-    borderRadius: 10, paddingVertical: 3, paddingHorizontal: 9,
-  },
+  activeBadge: { backgroundColor: `${colors.green}2E`, borderRadius: 10, paddingVertical: 3, paddingHorizontal: 9 },
   activeBadgeText: { fontSize: 10.5, fontWeight: '700', color: colors.green },
   psychDivider: { height: 0.5, backgroundColor: colors.border, marginVertical: 12 },
   psychActions: { flexDirection: 'row', gap: 7 },
   psychActionBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center',
-    justifyContent: 'center', gap: 5,
-    backgroundColor: colors.backgroundSelected,
-    borderRadius: 12, paddingVertical: 9, paddingHorizontal: 8,
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5,
+    backgroundColor: colors.backgroundSelected, borderRadius: 12, paddingVertical: 9, paddingHorizontal: 8,
     borderWidth: 0.5, borderColor: colors.border,
   },
   psychActionText: { fontSize: 11.5, fontWeight: '600' },
   rematchBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: '#fff', borderRadius: 12,
+    flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#fff', borderRadius: 12,
     paddingVertical: 10, paddingHorizontal: 14, marginTop: 10,
   },
   rematchText: { flex: 1, fontSize: 13, fontWeight: '600', color: '#172433' },
   rowItem: {
-    flexDirection: 'row', alignItems: 'center', gap: 12,
-    paddingVertical: 11, paddingHorizontal: 15,
-    borderRadius: 16, marginBottom: 7,
-    borderWidth: 0.5, borderColor: colors.border,
+    flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 11, paddingHorizontal: 15,
+    borderRadius: 16, marginBottom: 7, borderWidth: 0.5, borderColor: colors.border,
   },
   rowItemHighlight: { borderColor: `${colors.gold}40` },
   riWrap: { width: 36, height: 36, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
@@ -464,9 +378,8 @@ const styles = StyleSheet.create({
   rowTitle: { fontSize: 13.5, fontWeight: '600', color: colors.text },
   rowSub: { marginTop: 2 },
   logoutBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 8, marginTop: Spacing.three, paddingVertical: Spacing.three,
-    borderRadius: 16, borderWidth: 0.5,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: Spacing.three,
+    paddingVertical: Spacing.three, borderRadius: 16, borderWidth: 0.5,
     borderColor: `${colors.rose}40`, backgroundColor: `${colors.rose}10`,
   },
 });
