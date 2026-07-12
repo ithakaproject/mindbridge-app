@@ -74,7 +74,7 @@ serve(async (request) => {
       JSON.stringify(
         {
           message: "Google Calendar authorization succeeded.",
-          refresh_token: tokenData.refresh_token ?? null,
+          refresh_token_received: Boolean(tokenData.refresh_token),
           access_token_received: Boolean(tokenData.access_token),
           expires_in: tokenData.expires_in,
           scope: tokenData.scope,
