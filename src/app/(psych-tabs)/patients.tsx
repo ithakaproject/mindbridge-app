@@ -105,15 +105,27 @@ export default function PatientsScreen() {
       .in('id', patientIds);
     if (profilesError) console.warn('PROFILES ERROR:', profilesError.message);
 
-    // Fetch next upcoming session per patient
-    const now = new Date().toISOString();
-    const { data: sessions, error: sessionsError } = await supabase
+    // Fetch this psychologist's sessions with each patient, so we can map
+    // a message notification's related_id (a session id) back to a patient.
+    const { data: allSessions, error: allSessionsError } = await supabase
       .from('sessions')
-      .select('patient_id, start_time')
-      .eq('psychologist_id', user.id)
-      .gte('start_time', now)
-      .order('start_time');
-    if (sessionsError) console.warn('SESSIONS ERROR:', sessionsError.message);
+      .select('id, patient_id, start_time')
+      .eq('psychologist_id', user.id);
+    if (allSessionsError) console.warn('SESSIONS ERROR:', allSessionsError.message);
+
+    const sessionToPatient: Record<string, string> = {};
+    for (const s of allSessions ?? []) {
+      sessionToPatient[s.id] = s.patient_id;
+    }
+
+    // Next upcoming session per patient
+    const now = new Date().toISOString();
+    const nextSessionMap: Record<string, string> = {};
+    for (const s of (allSessions ?? [])
+      .filter((s) => s.start_time >= now)
+      .sort((a, b) => a.start_time.localeCompare(b.start_time))) {
+      if (!nextSessionMap[s.patient_id]) nextSessionMap[s.patient_id] = s.start_time;
+    }
 
     // Fetch latest chat message per patient — chat_messages already has a
     // real patient_id column, so this is a direct query with no nested
@@ -133,12 +145,26 @@ export default function PatientsScreen() {
       .eq('done', false);
     if (assignmentsError) console.warn('ASSIGNMENTS ERROR:', assignmentsError.message);
 
+    // Fetch unread message notifications for this psychologist, and count
+    // them per patient using the session→patient map built above.
+    const { data: unreadNotifs, error: unreadError } = await supabase
+      .from('notifications')
+      .select('related_id')
+      .eq('user_id', user.id)
+      .eq('type', 'message')
+      .eq('read', false);
+    if (unreadError) console.warn('UNREAD NOTIFICATIONS ERROR:', unreadError.message);
+
+    const unreadCountMap: Record<string, number> = {};
+    for (const n of unreadNotifs ?? []) {
+      const patientForThisMsg = n.related_id ? sessionToPatient[n.related_id] : null;
+      if (patientForThisMsg) {
+        unreadCountMap[patientForThisMsg] = (unreadCountMap[patientForThisMsg] ?? 0) + 1;
+      }
+    }
+
     // Build a map for quick lookups
     const profileMap = Object.fromEntries((profiles ?? []).map((p) => [p.id, p]));
-    const nextSessionMap: Record<string, string> = {};
-    for (const s of sessions ?? []) {
-      if (!nextSessionMap[s.patient_id]) nextSessionMap[s.patient_id] = s.start_time;
-    }
     const lastMessageMap: Record<string, { body: string; time: string }> = {};
     for (const m of messages ?? []) {
       if (!lastMessageMap[m.patient_id]) {
@@ -155,7 +181,7 @@ export default function PatientsScreen() {
       next_session: nextSessionMap[pp.id] ?? null,
       last_message: lastMessageMap[pp.id]?.body ?? null,
       last_message_time: lastMessageMap[pp.id]?.time ?? null,
-      unread_count: 0, // TODO: wire up unread count when messaging is fully built
+      unread_count: unreadCountMap[pp.id] ?? 0,
       has_pending_assignments: pendingSet.has(pp.id),
     }));
 
