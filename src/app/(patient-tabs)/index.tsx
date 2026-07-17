@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { ScrollView, View, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
+import { ScrollView, View, Pressable, StyleSheet, ActivityIndicator, Linking, Platform } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import Ionicons from '@expo/vector-icons/Ionicons';
@@ -240,6 +240,17 @@ export default function PatientHomeScreen() {
     });
   };
 
+  // On web, Linking.openURL can be silently blocked by popup blockers,
+  // especially after an async gap. window.open, called directly inside
+  // the press handler, is far more reliable in browsers.
+  const openMeetLink = (link: string) => {
+    if (Platform.OS === 'web') {
+      window.open(link, '_blank');
+    } else {
+      Linking.openURL(link);
+    }
+  };
+
   if (loading) {
     return (
       <ThemedView style={styles.screen}>
@@ -291,7 +302,7 @@ export default function PatientHomeScreen() {
               <View style={styles.linkCard}>
                 <Ionicons name="videocam" size={18} color={colors.teal} />
                 <ThemedText style={styles.linkText}>{nextSession.meet_link}</ThemedText>
-                <Pressable style={styles.linkBtn}>
+                <Pressable onPress={() => openMeetLink(nextSession.meet_link!)} style={styles.linkBtn}>
                   <ThemedText type="small" style={styles.linkBtnText}>Join</ThemedText>
                 </Pressable>
               </View>

@@ -1,5 +1,5 @@
 import { useMemo, useState, useCallback, useEffect } from 'react';
-import { ScrollView, View, Pressable, StyleSheet, ActivityIndicator, Linking } from 'react-native';
+import { ScrollView, View, Pressable, StyleSheet, ActivityIndicator, Linking, Platform } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { router, useFocusEffect } from 'expo-router';
 import { ThemedText } from '@/components/themed-text';
@@ -9,6 +9,7 @@ import { BottomSheetModal } from '@/components/bottom-sheet-modal';
 import { SuccessModal } from '@/components/success-modal';
 import { Colors, BottomTabInset, Spacing, MaxContentWidth } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
+import { zonedTimeToUtc } from '@/lib/timezone';
 
 const colors = Colors.dark;
 
@@ -21,34 +22,6 @@ const WEEKDAY_LABELS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 
 function dateKey(year: number, month: number, day: number) {
   return `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-}
-
-function toDisplayTime(pgTime: string): string {
-  const [hourStr, minuteStr] = pgTime.split(':');
-  let hour = parseInt(hourStr);
-  const minute = minuteStr;
-  const period = hour < 12 ? 'AM' : 'PM';
-  if (hour === 0) hour = 12;
-  else if (hour > 12) hour -= 12;
-  return `${hour}:${minute} ${period}`;
-}
-
-// Generate 50-min slots between start and end time
-function generateSlots(startTime: string, endTime: string): string[] {
-  const slots: string[] = [];
-  const [startH, startM] = startTime.split(':').map(Number);
-  const [endH, endM] = endTime.split(':').map(Number);
-  let current = startH * 60 + startM;
-  const end = endH * 60 + endM;
-  while (current + 50 <= end) {
-    const h = Math.floor(current / 60);
-    const m = current % 60;
-    const period = h < 12 ? 'AM' : 'PM';
-    const displayH = h === 0 ? 12 : h > 12 ? h - 12 : h;
-    slots.push(`${displayH}:${String(m).padStart(2, '0')} ${period}`);
-    current += 60; // 1 hour between slot starts
-  }
-  return slots;
 }
 
 function formatSessionListTime(isoString: string): string {
@@ -71,13 +44,59 @@ type SessionRow = {
   meet_link: string | null;
 };
 
+type SlotOption = {
+  utcDate: Date;
+  label: string;
+};
+
+// Builds the list of bookable 50-minute slots for a specific calendar date,
+// converting the psychologist's wall-clock availability (e.g. "9:00 AM in
+// America/New_York") into real UTC instants, then filters out anything
+// that's already in the past. This is what makes cross-timezone booking
+// and "can't book a time that's already passed" both work correctly.
+function buildSlotsForDate(
+  avail: AvailabilityRow,
+  year: number,
+  month: number,
+  day: number,
+  psychTimeZone: string
+): SlotOption[] {
+  const [startH, startM] = avail.start_time.split(':').map(Number);
+  const [endH, endM] = avail.end_time.split(':').map(Number);
+  const startMinutes = startH * 60 + startM;
+  const endMinutes = endH * 60 + endM;
+
+  const selectedLocalMidnight = new Date(year, month, day).toDateString();
+  const slots: SlotOption[] = [];
+  let current = startMinutes;
+
+  while (current + 50 <= endMinutes) {
+    const hour = Math.floor(current / 60);
+    const minute = current % 60;
+    const utcDate = zonedTimeToUtc(year, month, day, hour, minute, psychTimeZone);
+
+    if (utcDate.getTime() > Date.now()) {
+      let timeLabel = utcDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      // Rare edge case: a large timezone gap can shift a slot onto a
+      // different calendar date once converted to the patient's local
+      // time. Flag it explicitly rather than showing a misleading time.
+      if (utcDate.toDateString() !== selectedLocalMidnight) {
+        timeLabel += utcDate.getTime() > new Date(year, month, day).getTime() ? ' (next day)' : ' (prev day)';
+      }
+      slots.push({ utcDate, label: timeLabel });
+    }
+    current += 60;
+  }
+  return slots;
+}
+
 export default function ScheduleScreen() {
   const today = new Date();
   const [mode, setMode] = useState<'book' | 'rebook'>('book');
   const [viewYear, setViewYear] = useState(today.getFullYear());
   const [viewMonth, setViewMonth] = useState(today.getMonth());
   const [selectedDay, setSelectedDay] = useState<number | null>(null);
-  const [pickedTime, setPickedTime] = useState<string | null>(null);
+  const [pickedSlot, setPickedSlot] = useState<SlotOption | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [successOpen, setSuccessOpen] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -88,6 +107,7 @@ export default function ScheduleScreen() {
 
   const [psychologistId, setPsychologistId] = useState<string | null>(null);
   const [psychologistName, setPsychologistName] = useState('Your psychologist');
+  const [psychTimezone, setPsychTimezone] = useState('America/New_York');
   const [patientId, setPatientId] = useState<string | null>(null);
   const [availability, setAvailability] = useState<AvailabilityRow[]>([]);
   const [bookedSessions, setBookedSessions] = useState<SessionRow[]>([]);
@@ -133,6 +153,15 @@ export default function ScheduleScreen() {
       if (psychProfile?.full_name) {
         setPsychologistName(`Dr. ${psychProfile.full_name.split(' ').slice(-1)[0]}`);
       }
+
+      // Get psychologist's timezone
+      const { data: psychProfileRow, error: tzError } = await supabase
+        .from('psychologist_profiles')
+        .select('timezone')
+        .eq('id', psychId)
+        .single();
+      if (tzError) console.warn('PSYCH TIMEZONE ERROR:', tzError.message);
+      setPsychTimezone(psychProfileRow?.timezone || 'America/New_York');
 
       // Get availability
       const { data: availData } = await supabase
@@ -219,18 +248,19 @@ export default function ScheduleScreen() {
     }) ?? null;
   }, [selectedKey, bookedSessions, reschedulingSession]);
 
-  // Get slots for selected day
+  // Get slots for selected day — converted into the patient's local time,
+  // with anything already in the past filtered out.
   const selectedSlots = useMemo(() => {
     if (selectedDay == null) return [];
     const dow = new Date(viewYear, viewMonth, selectedDay).getDay();
     const avail = availability.find((a) => a.day_of_week === dow);
     if (!avail) return [];
-    return generateSlots(avail.start_time, avail.end_time);
-  }, [selectedDay, availability, viewYear, viewMonth]);
+    return buildSlotsForDate(avail, viewYear, viewMonth, selectedDay, psychTimezone);
+  }, [selectedDay, availability, viewYear, viewMonth, psychTimezone]);
 
-  const pickSlot = (time: string) => {
+  const pickSlot = (slot: SlotOption) => {
     setBookingError('');
-    setPickedTime(time);
+    setPickedSlot(slot);
     setConfirmOpen(true);
   };
 
@@ -247,25 +277,17 @@ export default function ScheduleScreen() {
   };
 
   async function confirmBooking() {
-    if (!selectedDay || !pickedTime || !psychologistId || !patientId) return;
+    if (!pickedSlot || !psychologistId || !patientId) return;
     setLastAction('book');
     setBooking(true);
     setBookingError('');
-
-    // Parse picked time into ISO
-    const [timePart, period] = pickedTime.split(' ');
-    let [hours, minutes] = timePart.split(':').map(Number);
-    if (period === 'PM' && hours !== 12) hours += 12;
-    if (period === 'AM' && hours === 12) hours = 0;
-
-    const sessionDate = new Date(viewYear, viewMonth, selectedDay, hours, minutes, 0);
 
     const { data: insertedSession, error } = await supabase
       .from('sessions')
       .insert({
         patient_id: patientId,
         psychologist_id: psychologistId,
-        start_time: sessionDate.toISOString(),
+        start_time: pickedSlot.utcDate.toISOString(),
         duration_minutes: 50,
         status: 'booked',
       })
@@ -319,17 +341,10 @@ export default function ScheduleScreen() {
   }
 
   async function confirmReschedule() {
-    if (!selectedDay || !pickedTime || !reschedulingSession) return;
+    if (!pickedSlot || !reschedulingSession) return;
     setLastAction('reschedule');
     setBooking(true);
     setBookingError('');
-
-    const [timePart, period] = pickedTime.split(' ');
-    let [hours, minutes] = timePart.split(':').map(Number);
-    if (period === 'PM' && hours !== 12) hours += 12;
-    if (period === 'AM' && hours === 12) hours = 0;
-
-    const sessionDate = new Date(viewYear, viewMonth, selectedDay, hours, minutes, 0);
 
     // Just update the start_time — the existing Google Calendar event and
     // its Meet link get reused (moved to the new time) rather than
@@ -337,7 +352,7 @@ export default function ScheduleScreen() {
     const { data: updatedSession, error } = await supabase
       .from('sessions')
       .update({
-        start_time: sessionDate.toISOString(),
+        start_time: pickedSlot.utcDate.toISOString(),
       })
       .eq('id', reschedulingSession.id)
       .select('id, start_time, duration_minutes, meet_link')
@@ -401,8 +416,15 @@ export default function ScheduleScreen() {
     }
   };
 
+  // On web, Linking.openURL can be silently blocked by popup blockers,
+  // especially after an async gap. window.open, called directly inside
+  // the press handler, is far more reliable in browsers.
   const openMeetLink = (link: string) => {
-    Linking.openURL(link);
+    if (Platform.OS === 'web') {
+      window.open(link, '_blank');
+    } else {
+      Linking.openURL(link);
+    }
   };
 
   if (loading) {
@@ -583,10 +605,10 @@ export default function ScheduleScreen() {
               </ThemedText>
             )}
 
-            {!isSelectedBooked && selectedSlots.map((slot, i) => (
-              <Pressable key={i} onPress={() => pickSlot(slot)}>
+            {!isSelectedBooked && selectedSlots.map((slot) => (
+              <Pressable key={slot.utcDate.toISOString()} onPress={() => pickSlot(slot)}>
                 <ThemedView type="backgroundElement" style={styles.slotItem}>
-                  <ThemedText themeColor="gold" style={styles.slotTime}>{slot}</ThemedText>
+                  <ThemedText themeColor="gold" style={styles.slotTime}>{slot.label}</ThemedText>
                   <ThemedText style={styles.slotDoc}>{psychologistName}</ThemedText>
                   <ThemedText style={styles.slotAvail}>Available</ThemedText>
                 </ThemedView>
@@ -620,7 +642,7 @@ export default function ScheduleScreen() {
         cancelLabel="Cancel">
         <View style={styles.confirmCard}>
           <ThemedText style={styles.confirmTime}>
-            {MONTH_SHORT[viewMonth]} {selectedDay} · {pickedTime}
+            {MONTH_SHORT[viewMonth]} {selectedDay} · {pickedSlot?.label}
           </ThemedText>
           <ThemedText type="small" themeColor="teal" style={{ marginTop: 4 }}>
             {psychologistName} · 50 min · Video session
@@ -638,7 +660,7 @@ export default function ScheduleScreen() {
         onClose={() => setSuccessOpen(false)}
         icon="🗓️"
         title={lastAction === 'reschedule' ? 'Session rescheduled!' : 'Session booked!'}
-        subtitle={`${MONTH_SHORT[viewMonth]} ${selectedDay} · ${pickedTime} with ${psychologistName} is confirmed.`}
+        subtitle={`${MONTH_SHORT[viewMonth]} ${selectedDay} · ${pickedSlot?.label} with ${psychologistName} is confirmed.`}
       />
     </ThemedView>
   );

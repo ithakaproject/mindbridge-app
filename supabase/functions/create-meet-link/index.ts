@@ -72,23 +72,27 @@ Deno.serve(async (req) => {
       });
     }
 
-    const serviceAccountJson = Deno.env.get('GOOGLE_SERVICE_ACCOUNT_JSON');
+    const clientId = Deno.env.get('GOOGLE_CLIENT_ID');
+    const clientSecret = Deno.env.get('GOOGLE_CLIENT_SECRET');
+    const refreshToken = Deno.env.get('GOOGLE_REFRESH_TOKEN');
     const calendarId = Deno.env.get('GOOGLE_CALENDAR_ID');
-    if (!serviceAccountJson || !calendarId) {
-      return new Response(JSON.stringify({ error: 'Google Calendar credentials are not configured' }), {
+
+    if (!clientId || !clientSecret || !refreshToken || !calendarId) {
+      return new Response(JSON.stringify({ error: 'Google OAuth credentials are not fully configured' }), {
         status: 500,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
 
-    const credentials = JSON.parse(serviceAccountJson);
+    // OAuth2 client authenticated as the real MindBridge Google account
+    // (via a stored refresh token), rather than a service account. This is
+    // what actually allows Meet link creation — Google restricts service
+    // accounts from generating Meet conferences unless the account is under
+    // a Workspace org with domain-wide delegation configured.
+    const oauth2Client = new google.auth.OAuth2(clientId, clientSecret);
+    oauth2Client.setCredentials({ refresh_token: refreshToken });
 
-    const auth = new google.auth.GoogleAuth({
-      credentials,
-      scopes: ['https://www.googleapis.com/auth/calendar'],
-    });
-
-    const calendar = google.calendar({ version: 'v3', auth });
+    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
 
     const startTime = new Date(sessionRow.start_time);
     const endTime = new Date(startTime.getTime() + sessionRow.duration_minutes * 60000);

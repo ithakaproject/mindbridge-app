@@ -1,5 +1,5 @@
 import { useMemo, useState, useCallback } from 'react';
-import { ScrollView, View, Pressable, StyleSheet, ActivityIndicator, Modal, Linking } from 'react-native';
+import { ScrollView, View, Pressable, StyleSheet, ActivityIndicator, Modal, Linking, Platform } from 'react-native';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { ThemedText } from '@/components/themed-text';
@@ -8,6 +8,7 @@ import { TopBar } from '@/components/top-bar';
 import { ToggleSwitch } from '@/components/toggle-switch';
 import { Colors, BottomTabInset, Spacing, MaxContentWidth } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
+import { getDeviceTimeZone, COMMON_TIMEZONES } from '@/lib/timezone';
 
 const colors = Colors.dark;
 
@@ -117,6 +118,9 @@ export default function CalendarScreen() {
   const [sessionsByDate, setSessionsByDate] = useState<Record<string, SessionRow[]>>({});
   const [activePicker, setActivePicker] = useState<ActivePicker>(null);
   const [userId, setUserId] = useState<string | null>(null);
+  const [timezone, setTimezone] = useState<string>('America/New_York');
+  const [timezoneModalOpen, setTimezoneModalOpen] = useState(false);
+  const [timezoneSaving, setTimezoneSaving] = useState(false);
 
   const isCurrentMonth = viewYear === today.getFullYear() && viewMonth === today.getMonth();
 
@@ -136,6 +140,27 @@ export default function CalendarScreen() {
       return;
     }
     setUserId(user.id);
+
+    // Load (or auto-detect + save) this psychologist's timezone
+    const { data: psychProfileRow, error: psychProfileError } = await supabase
+      .from('psychologist_profiles')
+      .select('timezone')
+      .eq('id', user.id)
+      .single();
+    if (psychProfileError) console.warn('PSYCH PROFILE TIMEZONE ERROR:', psychProfileError.message);
+
+    if (psychProfileRow?.timezone) {
+      setTimezone(psychProfileRow.timezone);
+    } else {
+      // No timezone on file yet — auto-detect from this device as a
+      // sensible default. The psychologist can still change it manually.
+      const detected = getDeviceTimeZone();
+      setTimezone(detected);
+      await supabase
+        .from('psychologist_profiles')
+        .update({ timezone: detected })
+        .eq('id', user.id);
+    }
 
     const { data: availData, error: availError } = await supabase
       .from('availability')
@@ -190,8 +215,15 @@ export default function CalendarScreen() {
     router.push({ pathname: '/patient/[id]', params: { id: patientId } });
   };
 
+  // On web, Linking.openURL can be silently blocked by popup blockers,
+  // especially after an async gap. window.open, called directly inside
+  // the press handler, is far more reliable in browsers.
   const openMeetLink = (link: string) => {
-    Linking.openURL(link);
+    if (Platform.OS === 'web') {
+      window.open(link, '_blank');
+    } else {
+      Linking.openURL(link);
+    }
   };
 
   const getAvailForDay = (dow: number) => availability.find((a) => a.day_of_week === dow);
@@ -237,6 +269,15 @@ export default function CalendarScreen() {
     setSaving(false);
   }
 
+  async function updateTimezone(tz: string) {
+    if (!userId) return;
+    setTimezoneSaving(true);
+    await supabase.from('psychologist_profiles').update({ timezone: tz }).eq('id', userId);
+    setTimezone(tz);
+    setTimezoneModalOpen(false);
+    setTimezoneSaving(false);
+  }
+
   if (loading) {
     return (
       <ThemedView style={styles.screen}>
@@ -247,6 +288,8 @@ export default function CalendarScreen() {
       </ThemedView>
     );
   }
+
+  const currentTimezoneLabel = COMMON_TIMEZONES.find((z) => z.value === timezone)?.label ?? timezone;
 
   return (
     <ThemedView style={styles.screen}>
@@ -359,6 +402,19 @@ export default function CalendarScreen() {
           </>
         ) : (
           <>
+            <Pressable onPress={() => setTimezoneModalOpen(true)} style={styles.timezoneRow}>
+              <Ionicons name="globe-outline" size={16} color={colors.teal} />
+              <View style={{ flex: 1 }}>
+                <ThemedText type="small" themeColor="textTertiary" style={styles.timezoneLabel}>
+                  Your timezone
+                </ThemedText>
+                <ThemedText style={styles.timezoneValue}>
+                  {currentTimezoneLabel}{timezoneSaving ? ' (saving…)' : ''}
+                </ThemedText>
+              </View>
+              <ThemedText type="small" themeColor="teal" style={{ fontWeight: '600' }}>Change</ThemedText>
+            </Pressable>
+
             <ThemedText style={styles.secLabel}>
               Available hours{saving ? ' (saving…)' : ''}
             </ThemedText>
@@ -418,6 +474,32 @@ export default function CalendarScreen() {
                     activePicker && updateTime(activePicker.dayOfWeek, activePicker.field, time)
                   }>
                   <ThemedText type="default">{time}</ThemedText>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </ThemedView>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        visible={timezoneModalOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setTimezoneModalOpen(false)}>
+        <Pressable
+          style={[styles.modalOverlay, { backgroundColor: colors.overlay }]}
+          onPress={() => setTimezoneModalOpen(false)}>
+          <ThemedView type="backgroundElement" style={styles.modalSheet}>
+            <ThemedText type="smallBold" style={styles.modalTitle}>
+              Select your timezone
+            </ThemedText>
+            <ScrollView style={styles.modalScroll}>
+              {COMMON_TIMEZONES.map((tz) => (
+                <Pressable
+                  key={tz.value}
+                  style={styles.timeOption}
+                  onPress={() => updateTimezone(tz.value)}>
+                  <ThemedText type="default">{tz.label}</ThemedText>
                 </Pressable>
               ))}
             </ScrollView>
@@ -491,6 +573,14 @@ const styles = StyleSheet.create({
     paddingVertical: 7, paddingHorizontal: 12,
   },
   joinBtnText: { fontSize: 12, fontWeight: '700', color: colors.background },
+  timezoneRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: colors.backgroundElement,
+    borderRadius: 13, paddingVertical: 10, paddingHorizontal: 15,
+    borderWidth: 0.5, borderColor: colors.border, marginBottom: 12,
+  },
+  timezoneLabel: { textTransform: 'uppercase', letterSpacing: 0.8 },
+  timezoneValue: { fontWeight: '600', color: colors.text, marginTop: 1 },
   availRow: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     paddingVertical: 10, paddingHorizontal: 15,
