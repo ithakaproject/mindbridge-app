@@ -3,6 +3,7 @@ import { View, Pressable, StyleSheet, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { ThemedText } from './themed-text';
+import { SwipeableTabs } from './swipeable-tabs';
 import { Colors } from '@/constants/theme';
 
 const colors = Colors.dark;
@@ -12,12 +13,20 @@ type IconName = keyof typeof Ionicons.glyphMap;
 // TODO (Supabase): drive this from real unread-message state once chat has a backend
 const HAS_UNREAD_MESSAGES = false;
 
+const TAB_ROUTES = ['/', '/schedule', '/journal', '/chat', '/profile'];
+// Swipe-to-change-tabs is turned off while on Chat, since it has its own
+// internal left/right pane switcher (Psychologist / AI Support) plus a
+// text input — stacking a second horizontal gesture there would conflict.
+const SWIPE_DISABLED_ROUTES = ['/chat'];
+
 export default function PatientAppTabs() {
   const insets = useSafeAreaInsets();
 
   return (
     <Tabs>
-      <TabSlot style={{ flex: 1 }} />
+      <SwipeableTabs routes={TAB_ROUTES} disableOnRoutes={SWIPE_DISABLED_ROUTES}>
+        <TabSlot style={{ flex: 1 }} />
+      </SwipeableTabs>
       <TabList
         style={[
           styles.bottomNav,

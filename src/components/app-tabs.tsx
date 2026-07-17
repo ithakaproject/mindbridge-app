@@ -3,18 +3,23 @@ import { View, Pressable, StyleSheet, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { ThemedText } from './themed-text';
+import { SwipeableTabs } from './swipeable-tabs';
 import { Colors } from '@/constants/theme';
 
 const colors = Colors.dark;
 
 type IconName = keyof typeof Ionicons.glyphMap;
 
+const TAB_ROUTES = ['/', '/patients', '/calendar', '/profile'];
+
 export default function AppTabs() {
   const insets = useSafeAreaInsets();
 
   return (
     <Tabs>
-      <TabSlot style={{ flex: 1 }} />
+      <SwipeableTabs routes={TAB_ROUTES}>
+        <TabSlot style={{ flex: 1 }} />
+      </SwipeableTabs>
       <TabList
         style={[
           styles.bottomNav,
@@ -90,4 +95,3 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 });
-
