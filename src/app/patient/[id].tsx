@@ -191,7 +191,7 @@ export default function PatientDetailScreen() {
       setJournalModalOpen(true);
       return;
     }
-    console.log('open journal viewer for', patientId);
+    router.push({ pathname: '/psych-journal/[id]', params: { id: patientId } });
   };
 
   // On web, Linking.openURL can be silently blocked by popup blockers,

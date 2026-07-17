@@ -96,6 +96,8 @@ export default function RootLayout() {
         <Stack.Screen name="chat/[id]" />
         <Stack.Screen name="psych-edit-profile" />
         <Stack.Screen name="psych-change-password" />
+        <Stack.Screen name="psych-journal/[id]" />
+        <Stack.Screen name="psych-journal-entry" />
       </Stack>
     </ThemeProvider>
   );

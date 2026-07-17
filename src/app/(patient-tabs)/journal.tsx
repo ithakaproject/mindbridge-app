@@ -33,16 +33,27 @@ type JournalEntry = {
   shared_with_psychologist: boolean;
 };
 
+type PendingRequest = {
+  id: string;
+  body: string | null;
+  related_id: string | null; // psychologist's user id
+};
+
 export default function PatientJournalScreen() {
   const [entries, setEntries] = useState<JournalEntry[]>([]);
   const [moodScores, setMoodScores] = useState<number[]>([]);
   const [loading, setLoading] = useState(true);
+  const [pendingRequest, setPendingRequest] = useState<PendingRequest | null>(null);
+  const [respondingTo, setRespondingTo] = useState(false);
 
   async function loadData() {
     setLoading(true);
 
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
+    if (!user) {
+      setLoading(false);
+      return;
+    }
 
     const { data: entryData } = await supabase
       .from('journal_entries')
@@ -62,10 +73,66 @@ export default function PatientJournalScreen() {
       .map((e) => e.mood_score!);
     setMoodScores(scores);
 
+    // Check for an unresolved journal access request from the psychologist
+    const { data: requestData, error: requestError } = await supabase
+      .from('notifications')
+      .select('id, body, related_id')
+      .eq('user_id', user.id)
+      .eq('type', 'journal_request')
+      .eq('resolved', false)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (requestError) console.warn('PENDING REQUEST ERROR:', requestError.message);
+    setPendingRequest((requestData as PendingRequest) ?? null);
+
     setLoading(false);
   }
 
   useFocusEffect(useCallback(() => { loadData(); }, []));
+
+  async function respondToRequest(grant: boolean) {
+    if (!pendingRequest || respondingTo) return;
+    setRespondingTo(true);
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      setRespondingTo(false);
+      return;
+    }
+
+    if (grant) {
+      const { error: grantError } = await supabase
+        .from('patient_profiles')
+        .update({ journal_access: true })
+        .eq('id', user.id);
+      if (grantError) {
+        console.warn('GRANT ACCESS ERROR:', grantError.message);
+        setRespondingTo(false);
+        return;
+      }
+    }
+
+    const { error: resolveError } = await supabase
+      .from('notifications')
+      .update({ resolved: true })
+      .eq('id', pendingRequest.id);
+    if (resolveError) console.warn('RESOLVE REQUEST ERROR:', resolveError.message);
+
+    if (pendingRequest.related_id) {
+      const { error: notifyError } = await supabase.from('notifications').insert({
+        user_id: pendingRequest.related_id,
+        type: grant ? 'journal_shared' : 'journal_declined',
+        title: grant ? 'Journal access granted' : 'Journal access declined',
+        body: null,
+        related_id: user.id,
+      });
+      if (notifyError) console.warn('RESPONSE NOTIFICATION ERROR:', notifyError.message);
+    }
+
+    setPendingRequest(null);
+    setRespondingTo(false);
+  }
 
   const trendUp = moodScores.length >= 2
     ? moodScores[moodScores.length - 1] >= moodScores[moodScores.length - 2]
@@ -101,6 +168,34 @@ export default function PatientJournalScreen() {
           <ThemedText type="small" themeColor="textSecondary">Your private space</ThemedText>
           <ThemedText style={styles.greetingTitle}>Journal</ThemedText>
         </View>
+
+        {pendingRequest && (
+          <View style={styles.requestBanner}>
+            <Ionicons name="lock-open-outline" size={17} color={colors.purple} />
+            <View style={{ flex: 1 }}>
+              <ThemedText style={styles.requestTitle}>Journal access requested</ThemedText>
+              <ThemedText type="small" themeColor="textSecondary" style={styles.requestSub}>
+                {pendingRequest.body ?? 'Your psychologist has requested access to your journal.'}
+              </ThemedText>
+              <View style={styles.requestActions}>
+                <Pressable
+                  onPress={() => respondToRequest(true)}
+                  disabled={respondingTo}
+                  style={styles.grantBtn}>
+                  <ThemedText style={styles.grantBtnText}>
+                    {respondingTo ? 'Working…' : 'Grant access'}
+                  </ThemedText>
+                </Pressable>
+                <Pressable
+                  onPress={() => respondToRequest(false)}
+                  disabled={respondingTo}
+                  style={styles.declineBtn}>
+                  <ThemedText style={styles.declineBtnText}>Decline</ThemedText>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        )}
 
         {/* Mood sparkline */}
         {moodScores.length > 0 && (
@@ -184,6 +279,26 @@ const styles = StyleSheet.create({
   },
   greeting: { paddingHorizontal: Spacing.two, paddingBottom: 8 },
   greetingTitle: { fontSize: 20, fontWeight: '800', letterSpacing: -0.4, color: colors.text },
+  requestBanner: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 10,
+    backgroundColor: `${colors.purple}14`,
+    borderWidth: 0.5, borderColor: `${colors.purple}40`,
+    borderRadius: 16, padding: 14, marginBottom: Spacing.three,
+  },
+  requestTitle: { fontSize: 13, fontWeight: '700', color: colors.text },
+  requestSub: { marginTop: 3, lineHeight: 17 },
+  requestActions: { flexDirection: 'row', gap: 8, marginTop: 10 },
+  grantBtn: {
+    backgroundColor: colors.purple, borderRadius: 10,
+    paddingVertical: 8, paddingHorizontal: 14,
+  },
+  grantBtnText: { fontSize: 12, fontWeight: '700', color: '#fff' },
+  declineBtn: {
+    backgroundColor: colors.backgroundSelected, borderRadius: 10,
+    paddingVertical: 8, paddingHorizontal: 14,
+    borderWidth: 0.5, borderColor: colors.border,
+  },
+  declineBtnText: { fontSize: 12, fontWeight: '600', color: colors.textSecondary },
   sparkCard: {
     backgroundColor: colors.backgroundElement,
     borderRadius: 18, padding: 14, marginBottom: Spacing.three,
