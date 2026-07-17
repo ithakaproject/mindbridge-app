@@ -49,6 +49,7 @@ export default function JournalEntryScreen() {
   const [entry, setEntry] = useState<EntryData | null>(null);
   const [answers, setAnswers] = useState<AnswerData[]>([]);
   const [psychName, setPsychName] = useState<PsychName>('your psychologist');
+  const [psychId, setPsychId] = useState<string | null>(null);
   const [shared, setShared] = useState(false);
   const [loading, setLoading] = useState(true);
   const [toggling, setToggling] = useState(false);
@@ -80,7 +81,7 @@ export default function JournalEntryScreen() {
         .eq('entry_id', id);
       setAnswers((answerData as AnswerData[]) ?? []);
 
-      // Fetch psychologist name
+      // Fetch psychologist name + id
       const { data: patientProfile } = await supabase
         .from('patient_profiles')
         .select('psychologist_id')
@@ -88,6 +89,7 @@ export default function JournalEntryScreen() {
         .single();
 
       if (patientProfile?.psychologist_id) {
+        setPsychId(patientProfile.psychologist_id);
         const { data: psychProfile } = await supabase
           .from('profiles')
           .select('full_name')
@@ -109,10 +111,29 @@ export default function JournalEntryScreen() {
     setToggling(true);
     setShared(value);
 
-    await supabase
+    const { error } = await supabase
       .from('journal_entries')
       .update({ shared_with_psychologist: value })
       .eq('id', entry.id);
+
+    if (error) {
+      console.warn('SHARE TOGGLE ERROR:', error.message);
+      setToggling(false);
+      return;
+    }
+
+    // Notify the psychologist only when access is newly granted, not revoked
+    if (value && psychId) {
+      const { data: { user } } = await supabase.auth.getUser();
+      const { error: notifError } = await supabase.from('notifications').insert({
+        user_id: psychId,
+        type: 'journal_shared',
+        title: 'A patient shared a journal entry',
+        body: `From ${formatDate(entry.created_at)}`,
+        related_id: user?.id ?? null,
+      });
+      if (notifError) console.warn('JOURNAL SHARE NOTIFICATION ERROR:', notifError.message);
+    }
 
     setToggling(false);
   }

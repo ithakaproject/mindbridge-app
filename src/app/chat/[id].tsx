@@ -139,6 +139,18 @@ export default function ChatScreen() {
     setDraft('');
     setMessages((prev) => [...prev, newMsg as ChatMessage]);
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
+
+    if (patientId) {
+      const { error: notifError } = await supabase.from('notifications').insert({
+        user_id: patientId,
+        type: 'message',
+        title: 'New message',
+        body: text.length > 80 ? text.slice(0, 80) + '…' : text,
+        related_id: sessionId,
+      });
+      if (notifError) console.warn('MESSAGE NOTIFICATION ERROR:', notifError.message);
+    }
+
     setSending(false);
   }
 
@@ -187,6 +199,15 @@ export default function ChatScreen() {
         setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
       }
     }
+
+    const { error: notifError } = await supabase.from('notifications').insert({
+      user_id: patientId,
+      type: 'assignment',
+      title: 'New assignment',
+      body: template.title,
+      related_id: assignment.id,
+    });
+    if (notifError) console.warn('ASSIGNMENT NOTIFICATION ERROR:', notifError.message);
 
     setAssignModalOpen(false);
     setSuccessOpen(true);

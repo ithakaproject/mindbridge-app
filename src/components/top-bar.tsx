@@ -1,8 +1,12 @@
-import { View, StyleSheet } from 'react-native';
+import { useState, useCallback } from 'react';
+import { View, Pressable, StyleSheet } from 'react-native';
+import { useFocusEffect } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { ThemedText } from './themed-text';
 import { ThemedView } from './themed-view';
+import { NotificationsModal } from './notifications-modal';
 import { Colors, Spacing } from '@/constants/theme';
+import { supabase } from '@/lib/supabase';
 
 const colors = Colors.dark;
 
@@ -11,6 +15,47 @@ type TopBarProps = {
 };
 
 export function TopBar({ showNotification = true }: TopBarProps) {
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [userRole, setUserRole] = useState<'patient' | 'psychologist'>('patient');
+
+  async function loadUnreadCount() {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('role')
+      .eq('id', user.id)
+      .single();
+    if (profile?.role === 'psychologist' || profile?.role === 'patient') {
+      setUserRole(profile.role);
+    }
+
+    const { count, error } = await supabase
+      .from('notifications')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+      .eq('read', false);
+
+    if (error) {
+      console.warn('UNREAD COUNT ERROR:', error.message);
+      return;
+    }
+    setUnreadCount(count ?? 0);
+  }
+
+  useFocusEffect(
+    useCallback(() => {
+      if (showNotification) loadUnreadCount();
+    }, [showNotification])
+  );
+
+  const handleClose = () => {
+    setModalOpen(false);
+    loadUnreadCount();
+  };
+
   return (
     <View style={styles.topBar}>
       <View style={styles.logoWrap}>
@@ -22,10 +67,13 @@ export function TopBar({ showNotification = true }: TopBarProps) {
         </ThemedText>
       </View>
       {showNotification && (
-        <View style={styles.notifWrap}>
-          <Ionicons name="notifications-outline" size={20} color={colors.textSecondary} />
-          <View style={styles.notifDot} />
-        </View>
+        <>
+          <Pressable onPress={() => setModalOpen(true)} style={styles.notifWrap} hitSlop={10}>
+            <Ionicons name="notifications-outline" size={20} color={colors.textSecondary} />
+            {unreadCount > 0 && <View style={styles.notifDot} />}
+          </Pressable>
+          <NotificationsModal visible={modalOpen} onClose={handleClose} userRole={userRole} />
+        </>
       )}
     </View>
   );

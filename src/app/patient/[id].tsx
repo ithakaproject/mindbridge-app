@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { ScrollView, View, Pressable, TextInput, StyleSheet, ActivityIndicator, Linking } from 'react-native';
+import { ScrollView, View, Pressable, TextInput, StyleSheet, ActivityIndicator, Linking, Platform } from 'react-native';
 import { useLocalSearchParams, router, useFocusEffect } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { ThemedText } from '@/components/themed-text';
@@ -194,8 +194,15 @@ export default function PatientDetailScreen() {
     console.log('open journal viewer for', patientId);
   };
 
+  // On web, Linking.openURL can be silently blocked by popup blockers,
+  // especially after an async gap. window.open, called directly inside
+  // the press handler, is far more reliable in browsers.
   const openMeetLink = (link: string) => {
-    Linking.openURL(link);
+    if (Platform.OS === 'web') {
+      window.open(link, '_blank');
+    } else {
+      Linking.openURL(link);
+    }
   };
 
   async function handleAssignSend(template: AssignmentTemplate) {
@@ -221,6 +228,16 @@ export default function PatientDetailScreen() {
     }
 
     setAssignments((prev) => [newAssign as AssignmentRow, ...prev]);
+
+    const { error: notifError } = await supabase.from('notifications').insert({
+      user_id: patientId,
+      type: 'assignment',
+      title: 'New assignment',
+      body: template.title,
+      related_id: newAssign.id,
+    });
+    if (notifError) console.warn('ASSIGNMENT NOTIFICATION ERROR:', notifError.message);
+
     setAssignModalOpen(false);
     setSuccessInfo({
       icon: '📋',
@@ -302,8 +319,17 @@ export default function PatientDetailScreen() {
     setCustomQuestions((prev) => prev.filter((q) => q.id !== id));
   }
 
-  const handleJournalRequestSent = (period: string) => {
-    console.log('journal access requested for', period);
+  const handleJournalRequestSent = async (period: string) => {
+    if (!patientId || !psychId) return;
+
+    const { error } = await supabase.from('notifications').insert({
+      user_id: patientId,
+      type: 'journal_request',
+      title: 'Your psychologist requested journal access',
+      body: `Requesting access to entries from: ${period}`,
+      related_id: psychId,
+    });
+    if (error) console.warn('JOURNAL REQUEST NOTIFICATION ERROR:', error.message);
   };
 
   if (loading) {

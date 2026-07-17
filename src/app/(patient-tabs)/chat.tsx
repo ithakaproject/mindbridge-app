@@ -35,6 +35,7 @@ export default function PatientChatScreen() {
   const [psychInitials, setPsychInitials] = useState('DR');
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [patientId, setPatientId] = useState<string | null>(null);
+  const [psychologistId, setPsychologistId] = useState<string | null>(null);
 
   const [aiMessages, setAiMessages] = useState<AiMessage[]>([
     {
@@ -68,6 +69,7 @@ export default function PatientChatScreen() {
       setLoading(false);
       return;
     }
+    setPsychologistId(patientProfile.psychologist_id);
 
     const { data: psychProfile } = await supabase
       .from('profiles')
@@ -143,6 +145,18 @@ export default function PatientChatScreen() {
     setPsychDraft('');
     setMessages((prev) => [...prev, newMsg as ChatMessage]);
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
+
+    if (psychologistId) {
+      const { error: notifError } = await supabase.from('notifications').insert({
+        user_id: psychologistId,
+        type: 'message',
+        title: 'New message',
+        body: text.length > 80 ? text.slice(0, 80) + '…' : text,
+        related_id: sessionId,
+      });
+      if (notifError) console.warn('MESSAGE NOTIFICATION ERROR:', notifError.message);
+    }
+
     setSending(false);
   }
 
