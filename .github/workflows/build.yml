@@ -25,8 +25,14 @@ jobs:
       - name: Build app
         id: build
         run: |
+          set +e
           OUTPUT=$(eas build --platform all --non-interactive 2>&1)
+          EXIT_CODE=$?
           echo "$OUTPUT"
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "EAS build failed with exit code $EXIT_CODE"
+            exit $EXIT_CODE
+          fi
           ANDROID_URL=$(echo "$OUTPUT" | grep -o 'https://expo\.dev/artifacts/eas/[^ ]*\.apk' | head -1)
           IOS_URL=$(echo "$OUTPUT" | grep -o 'https://expo\.dev/artifacts/eas/[^ ]*\.ipa' | head -1)
           echo "android_url=$ANDROID_URL" >> $GITHUB_OUTPUT
