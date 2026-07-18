@@ -20,8 +20,8 @@ jobs:
         with:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
-          packager-cache-key: ''
-          eas-cache-key: ''
+          eas-cache: false
+          expo-cache: false
       - name: Build app
         id: build
         run: |
