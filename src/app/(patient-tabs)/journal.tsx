@@ -37,6 +37,7 @@ type PendingRequest = {
   id: string;
   body: string | null;
   related_id: string | null; // psychologist's user id
+  count: number | null;
 };
 
 export default function PatientJournalScreen() {
@@ -76,7 +77,7 @@ export default function PatientJournalScreen() {
     // Check for an unresolved journal access request from the psychologist
     const { data: requestData, error: requestError } = await supabase
       .from('notifications')
-      .select('id, body, related_id')
+      .select('id, body, related_id, count')
       .eq('user_id', user.id)
       .eq('type', 'journal_request')
       .eq('resolved', false)
@@ -102,14 +103,39 @@ export default function PatientJournalScreen() {
     }
 
     if (grant) {
-      const { error: grantError } = await supabase
-        .from('patient_profiles')
-        .update({ journal_access: true })
-        .eq('id', user.id);
-      if (grantError) {
-        console.warn('GRANT ACCESS ERROR:', grantError.message);
+      const count = pendingRequest.count ?? 10;
+
+      // Grab exactly the most recent `count` entries and mark only those
+      // as shared — this is what keeps access scoped to what was actually
+      // requested, instead of exposing every entry the patient has ever written.
+      const { data: recentEntries, error: fetchError } = await supabase
+        .from('journal_entries')
+        .select('id')
+        .eq('patient_id', user.id)
+        .order('created_at', { ascending: false })
+        .limit(count);
+
+      if (fetchError) {
+        console.warn('FETCH RECENT ENTRIES ERROR:', fetchError.message);
         setRespondingTo(false);
         return;
+      }
+
+      const idsToShare = (recentEntries ?? []).map((e) => e.id);
+      if (idsToShare.length > 0) {
+        const { error: shareError } = await supabase
+          .from('journal_entries')
+          .update({ shared_with_psychologist: true })
+          .in('id', idsToShare);
+        if (shareError) {
+          console.warn('BULK SHARE ERROR:', shareError.message);
+          setRespondingTo(false);
+          return;
+        }
+        // Reflect the change locally right away
+        setEntries((prev) =>
+          prev.map((e) => (idsToShare.includes(e.id) ? { ...e, shared_with_psychologist: true } : e))
+        );
       }
     }
 

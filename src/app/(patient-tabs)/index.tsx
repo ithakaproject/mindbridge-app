@@ -236,7 +236,7 @@ export default function PatientHomeScreen() {
   const openAssignment = (item: AssignmentRow) => {
     router.push({
       pathname: '/assignment',
-      params: { title: item.title, desc: item.sub, sub: item.sub, tagColor: 'gold' },
+      params: { id: item.id },
     });
   };
 

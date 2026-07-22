@@ -90,7 +90,11 @@ export default function PatientChatScreen() {
       );
     }
 
-    // Get or create a chat session between patient and psychologist
+    // Get the most recent session — used only to tag new outgoing messages
+    // and to gate whether the input is enabled. Message HISTORY is loaded
+    // separately below by patient_id, so it survives across however many
+    // sessions get booked over time, instead of "disappearing" whenever a
+    // new session becomes the most recent one.
     const { data: existingSession } = await supabase
       .from('sessions')
       .select('id')
@@ -103,14 +107,13 @@ export default function PatientChatScreen() {
     const chatSessionId = existingSession?.id ?? null;
     setSessionId(chatSessionId);
 
-    if (chatSessionId) {
-      const { data: msgData } = await supabase
-        .from('chat_messages')
-        .select('id, sender, body, created_at')
-        .eq('session_id', chatSessionId)
-        .order('created_at');
-      setMessages((msgData as ChatMessage[]) ?? []);
-    }
+    const { data: msgData, error: msgError } = await supabase
+      .from('chat_messages')
+      .select('id, sender, body, created_at')
+      .eq('patient_id', user.id)
+      .order('created_at');
+    if (msgError) console.warn('CHAT HISTORY ERROR:', msgError.message);
+    setMessages((msgData as ChatMessage[]) ?? []);
 
     setLoading(false);
   }

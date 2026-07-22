@@ -1,31 +1,37 @@
 import { useState } from 'react';
-import { View, Pressable, StyleSheet } from 'react-native';
+import { View, Pressable, TextInput, StyleSheet } from 'react-native';
 import { ThemedText } from './themed-text';
 import { BottomSheetModal } from './bottom-sheet-modal';
 import { Colors } from '@/constants/theme';
 
 const colors = Colors.dark;
 
-const PERIODS = ['Yesterday', 'Last 7 days', 'Last 30 days', 'Last 3 months'];
+const PRESET_COUNTS = [5, 10, 20];
 
 type JournalRequestModalProps = {
   visible: boolean;
   onClose: () => void;
-  onRequestSent: (period: string) => void;
+  onRequestSent: (count: number) => void;
 };
 
 export function JournalRequestModal({ visible, onClose, onRequestSent }: JournalRequestModalProps) {
   const [step, setStep] = useState<'select' | 'sent'>('select');
-  const [selectedPeriod, setSelectedPeriod] = useState(PERIODS[0]);
+  const [selectedCount, setSelectedCount] = useState<number>(PRESET_COUNTS[0]);
+  const [customText, setCustomText] = useState('');
+  const [useCustom, setUseCustom] = useState(false);
 
   const handleClose = () => {
     onClose();
     setStep('select');
+    setUseCustom(false);
+    setCustomText('');
   };
 
   const handleSend = () => {
+    const finalCount = useCustom ? parseInt(customText, 10) : selectedCount;
+    if (!finalCount || finalCount < 1) return;
     setStep('sent');
-    onRequestSent(selectedPeriod);
+    onRequestSent(finalCount);
   };
 
   if (step === 'sent') {
@@ -40,27 +46,53 @@ export function JournalRequestModal({ visible, onClose, onRequestSent }: Journal
     );
   }
 
+  const customValid = useCustom ? parseInt(customText, 10) > 0 : true;
+
   return (
     <BottomSheetModal
       visible={visible}
       onClose={handleClose}
       title="Request Journal Access"
-      subtitle="Patient will receive a consent notification for the selected period."
+      subtitle="Choose how many of the patient's most recent journal entries you'd like to view."
       ctaLabel="Send Request"
       onCta={handleSend}
       cancelLabel="Cancel">
-      {PERIODS.map((period) => {
-        const selected = period === selectedPeriod;
+      {PRESET_COUNTS.map((count) => {
+        const selected = !useCustom && count === selectedCount;
         return (
           <Pressable
-            key={period}
-            onPress={() => setSelectedPeriod(period)}
+            key={count}
+            onPress={() => { setUseCustom(false); setSelectedCount(count); }}
             style={[styles.row, selected && styles.rowSelected]}>
-            <ThemedText style={styles.label}>{period}</ThemedText>
+            <ThemedText style={styles.label}>Last {count} entries</ThemedText>
             <View style={[styles.radio, selected && styles.radioSelected]} />
           </Pressable>
         );
       })}
+
+      <Pressable
+        onPress={() => setUseCustom(true)}
+        style={[styles.row, useCustom && styles.rowSelected]}>
+        <ThemedText style={styles.label}>Custom amount</ThemedText>
+        <View style={[styles.radio, useCustom && styles.radioSelected]} />
+      </Pressable>
+
+      {useCustom && (
+        <TextInput
+          value={customText}
+          onChangeText={setCustomText}
+          placeholder="Number of entries…"
+          placeholderTextColor={colors.textTertiary}
+          keyboardType="number-pad"
+          style={styles.customInput}
+        />
+      )}
+
+      {!customValid && (
+        <ThemedText type="small" themeColor="error" style={{ marginTop: 4 }}>
+          Enter a number greater than 0.
+        </ThemedText>
+      )}
     </BottomSheetModal>
   );
 }
@@ -97,6 +129,17 @@ const styles = StyleSheet.create({
   radioSelected: {
     backgroundColor: colors.purple,
     borderColor: colors.purple,
+  },
+  customInput: {
+    backgroundColor: colors.backgroundSelected,
+    borderWidth: 0.5,
+    borderColor: colors.border,
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 13,
+    fontSize: 13,
+    color: colors.text,
+    marginBottom: 8,
   },
   sentIcon: {
     fontSize: 48,

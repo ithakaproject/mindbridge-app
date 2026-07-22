@@ -4,6 +4,8 @@ import { useLocalSearchParams, router, useFocusEffect } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { JournalRequestModal } from '@/components/journal-request-modal';
+import { SuccessModal } from '@/components/success-modal';
 import { Colors, Spacing, MaxContentWidth, BottomTabInset } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 
@@ -36,6 +38,9 @@ export default function PsychJournalListScreen() {
   const [patientName, setPatientName] = useState('Patient');
   const [entries, setEntries] = useState<EntryRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [psychId, setPsychId] = useState<string | null>(null);
+  const [requestModalOpen, setRequestModalOpen] = useState(false);
+  const [successOpen, setSuccessOpen] = useState(false);
 
   async function loadData() {
     setLoading(true);
@@ -43,6 +48,9 @@ export default function PsychJournalListScreen() {
       setLoading(false);
       return;
     }
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user) setPsychId(user.id);
 
     const { data: profile, error: profileError } = await supabase
       .from('profiles')
@@ -68,6 +76,23 @@ export default function PsychJournalListScreen() {
 
   useFocusEffect(useCallback(() => { loadData(); }, [patientId]));
 
+  async function handleRequestSent(count: number) {
+    if (!patientId || !psychId) return;
+
+    const { error } = await supabase.from('notifications').insert({
+      user_id: patientId,
+      type: 'journal_request',
+      title: 'Your psychologist requested journal access',
+      body: `Requesting access to your last ${count} journal ${count === 1 ? 'entry' : 'entries'}`,
+      related_id: psychId,
+      count,
+    });
+    if (error) console.warn('JOURNAL REQUEST NOTIFICATION ERROR:', error.message);
+
+    setRequestModalOpen(false);
+    setSuccessOpen(true);
+  }
+
   if (loading) {
     return (
       <ThemedView style={styles.screen}>
@@ -90,7 +115,9 @@ export default function PsychJournalListScreen() {
           <Ionicons name="chevron-back" size={24} color={colors.gold} />
         </Pressable>
         <ThemedText style={styles.headerTitle}>{patientName}'s Journal</ThemedText>
-        <View style={{ width: 24 }} />
+        <Pressable onPress={() => setRequestModalOpen(true)} hitSlop={12}>
+          <Ionicons name="add-circle-outline" size={22} color={colors.purple} />
+        </Pressable>
       </View>
 
       <ScrollView
@@ -101,7 +128,7 @@ export default function PsychJournalListScreen() {
             <ThemedText style={styles.emptyEmoji}>📔</ThemedText>
             <ThemedText style={styles.emptyTitle}>No shared entries yet</ThemedText>
             <ThemedText type="small" themeColor="textTertiary" style={styles.emptySub}>
-              Entries {patientName.split(' ')[0]} shares with you will appear here.
+              Tap the + above to request access to {patientName.split(' ')[0]}'s recent entries.
             </ThemedText>
           </View>
         ) : (
@@ -128,6 +155,20 @@ export default function PsychJournalListScreen() {
           ))
         )}
       </ScrollView>
+
+      <JournalRequestModal
+        visible={requestModalOpen}
+        onClose={() => setRequestModalOpen(false)}
+        onRequestSent={handleRequestSent}
+      />
+
+      <SuccessModal
+        visible={successOpen}
+        onClose={() => setSuccessOpen(false)}
+        icon="📩"
+        title="Request sent"
+        subtitle={`${patientName.split(' ')[0]} has been notified.`}
+      />
     </ThemedView>
   );
 }

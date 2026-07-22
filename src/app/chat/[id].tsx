@@ -86,7 +86,9 @@ export default function ChatScreen() {
       });
     }
 
-    // Get most recent session between this psychologist and patient
+    // Get most recent session — used only to tag outgoing messages and to
+    // gate the input. Message HISTORY is loaded separately below by
+    // patient_id, so it persists regardless of how many sessions exist.
     const { data: sessionData } = await supabase
       .from('sessions')
       .select('id')
@@ -99,14 +101,13 @@ export default function ChatScreen() {
     const chatSessionId = sessionData?.id ?? null;
     setSessionId(chatSessionId);
 
-    if (chatSessionId) {
-      const { data: msgData } = await supabase
-        .from('chat_messages')
-        .select('id, sender, body, created_at, assignment_id')
-        .eq('session_id', chatSessionId)
-        .order('created_at');
-      setMessages((msgData as ChatMessage[]) ?? []);
-    }
+    const { data: msgData, error: msgError } = await supabase
+      .from('chat_messages')
+      .select('id, sender, body, created_at, assignment_id')
+      .eq('patient_id', patientId)
+      .order('created_at');
+    if (msgError) console.warn('CHAT HISTORY ERROR:', msgError.message);
+    setMessages((msgData as ChatMessage[]) ?? []);
 
     setLoading(false);
   }
@@ -158,12 +159,12 @@ export default function ChatScreen() {
     if (!patientId || !psychId) return;
     setSendError('');
 
-    // Insert assignment into assignments table
+    // Insert assignment into assignments table — note: this table has no
+    // psychologist_id column, only patient_id.
     const { data: assignment, error: assignmentError } = await supabase
       .from('assignments')
       .insert({
         patient_id: patientId,
-        psychologist_id: psychId,
         title: template.title,
         sub: template.sub,
         icon: template.icon ?? 'clipboard',

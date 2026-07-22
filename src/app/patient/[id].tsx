@@ -7,7 +7,6 @@ import { ThemedView } from '@/components/themed-view';
 import { BottomSheetModal } from '@/components/bottom-sheet-modal';
 import { AssignModal, type AssignmentTemplate } from '@/components/assign-modal';
 import { SuccessModal } from '@/components/success-modal';
-import { JournalRequestModal } from '@/components/journal-request-modal';
 import { ToggleSwitch } from '@/components/toggle-switch';
 import { Colors, Spacing, MaxContentWidth, BottomTabInset } from '@/constants/theme';
 import { REFLECTION_QUESTIONS } from '@/data/journal-options';
@@ -46,7 +45,6 @@ type PatientData = {
   full_name: string;
   flag: string;
   notes: string | null;
-  journal_access: boolean;
 };
 
 type AssignmentRow = {
@@ -86,7 +84,6 @@ export default function PatientDetailScreen() {
   const [notesModalOpen, setNotesModalOpen] = useState(false);
   const [draftNote, setDraftNote] = useState('');
   const [assignModalOpen, setAssignModalOpen] = useState(false);
-  const [journalModalOpen, setJournalModalOpen] = useState(false);
   const [newCustomQuestion, setNewCustomQuestion] = useState('');
   const [successInfo, setSuccessInfo] = useState<{ icon: string; title: string; subtitle: string } | null>(null);
 
@@ -111,7 +108,7 @@ export default function PatientDetailScreen() {
 
     const { data: patientProfile, error: patientProfileError } = await supabase
       .from('patient_profiles')
-      .select('flag, notes, journal_access')
+      .select('flag, notes')
       .eq('id', patientId)
       .single();
     if (patientProfileError) console.warn('PATIENT PROFILE ERROR:', patientProfileError.message);
@@ -121,7 +118,6 @@ export default function PatientDetailScreen() {
       full_name: profile?.full_name ?? 'Patient',
       flag: patientProfile?.flag ?? 'progress',
       notes: patientProfile?.notes ?? null,
-      journal_access: patientProfile?.journal_access ?? false,
     });
 
     // Fetch assignments
@@ -186,11 +182,10 @@ export default function PatientDetailScreen() {
 
   const goToChat = () => router.push({ pathname: '/chat/[id]', params: { id: patientId } });
 
+  // Journal access is no longer an all-or-nothing gate — this always opens
+  // the shared-entries list, which will simply be empty until the patient
+  // grants an access request (see the "+" button on that screen).
   const goToJournal = () => {
-    if (!patient?.journal_access) {
-      setJournalModalOpen(true);
-      return;
-    }
     router.push({ pathname: '/psych-journal/[id]', params: { id: patientId } });
   };
 
@@ -212,7 +207,6 @@ export default function PatientDetailScreen() {
       .from('assignments')
       .insert({
         patient_id: patientId,
-        psychologist_id: psychId,
         title: template.title,
         sub: 'Assigned today',
         icon: template.icon ?? 'clipboard',
@@ -318,19 +312,6 @@ export default function PatientDetailScreen() {
     }
     setCustomQuestions((prev) => prev.filter((q) => q.id !== id));
   }
-
-  const handleJournalRequestSent = async (period: string) => {
-    if (!patientId || !psychId) return;
-
-    const { error } = await supabase.from('notifications').insert({
-      user_id: patientId,
-      type: 'journal_request',
-      title: 'Your psychologist requested journal access',
-      body: `Requesting access to entries from: ${period}`,
-      related_id: psychId,
-    });
-    if (error) console.warn('JOURNAL REQUEST NOTIFICATION ERROR:', error.message);
-  };
 
   if (loading) {
     return (
@@ -458,12 +439,7 @@ export default function PatientDetailScreen() {
         {/* Quick actions */}
         <View style={styles.quickActions}>
           <QuickAction icon="chatbubble-outline" label="Message" color={colors.teal} onPress={goToChat} />
-          <QuickAction
-            icon="book-outline"
-            label={patient.journal_access ? 'Journal' : 'Request'}
-            color={colors.purple}
-            onPress={goToJournal}
-          />
+          <QuickAction icon="book-outline" label="Journal" color={colors.purple} onPress={goToJournal} />
           <QuickAction icon="clipboard-outline" label="Assign" color={colors.gold} onPress={() => setAssignModalOpen(true)} />
           <QuickAction icon="calendar-outline" label="Schedule" color={colors.green} onPress={() => router.push('/(psych-tabs)/calendar')} />
         </View>
@@ -579,12 +555,6 @@ export default function PatientDetailScreen() {
       </BottomSheetModal>
 
       <AssignModal visible={assignModalOpen} onClose={() => setAssignModalOpen(false)} onSend={handleAssignSend} />
-
-      <JournalRequestModal
-        visible={journalModalOpen}
-        onClose={() => setJournalModalOpen(false)}
-        onRequestSent={handleJournalRequestSent}
-      />
 
       <SuccessModal
         visible={!!successInfo}
