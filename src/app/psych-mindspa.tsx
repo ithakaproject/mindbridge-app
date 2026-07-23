@@ -1,22 +1,28 @@
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, TextInput } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { useTheme } from '@/hooks/use-theme';
-import { Spacing, MaxContentWidth, MaxFormWidth } from '@/constants/theme';
+import { Colors, Spacing, MaxContentWidth, MaxFormWidth } from '@/constants/theme';
+
+const colors = Colors.dark;
 
 export default function PsychMindspaScreen() {
-  const theme = useTheme();
+  const params = useLocalSearchParams<{ languages?: string; specialtyScores?: string }>();
   const [hasCourses, setHasCourses] = useState<boolean | null>(null);
   const [courses, setCourses] = useState('');
 
   const canContinue = hasCourses !== null;
 
   function handleContinue() {
-    // TODO: save `hasCourses` + `courses` to Supabase once it's wired up
-    router.push('/psych-hours');
+    router.push({
+      pathname: '/psych-hours',
+      params: {
+        languages: params.languages ?? '[]',
+        specialtyScores: params.specialtyScores ?? '{}',
+      },
+    });
   }
 
   return (
@@ -27,23 +33,17 @@ export default function PsychMindspaScreen() {
         </Pressable>
 
         <ScrollView contentContainerStyle={styles.scrollContent}>
-          <ThemedView style={styles.card}>
+          <View style={styles.card}>
             <ThemedText type="title">MindSpa courses</ThemedText>
             <ThemedText type="default" themeColor="textSecondary" style={styles.subtitle}>
               Have you created any courses on MindSpa?
             </ThemedText>
 
-            <ThemedView style={styles.choiceRow}>
+            <View style={styles.choiceRow}>
               <Pressable
                 onPress={() => setHasCourses(true)}
-                style={[
-                  styles.choicePill,
-                  {
-                    borderColor: hasCourses === true ? theme.teal : theme.border,
-                    backgroundColor: hasCourses === true ? theme.tealSoft : theme.backgroundElement,
-                  },
-                ]}>
-                <ThemedText type="smallBold" themeColor={hasCourses === true ? 'teal' : 'textSecondary'}>
+                style={[styles.choicePill, hasCourses === true && styles.choicePillSelected]}>
+                <ThemedText type="smallBold" themeColor={hasCourses === true ? undefined : 'textSecondary'} style={hasCourses === true ? styles.choicePillTextSelected : undefined}>
                   Yes
                 </ThemedText>
               </Pressable>
@@ -52,46 +52,36 @@ export default function PsychMindspaScreen() {
                   setHasCourses(false);
                   setCourses('');
                 }}
-                style={[
-                  styles.choicePill,
-                  {
-                    borderColor: hasCourses === false ? theme.teal : theme.border,
-                    backgroundColor: hasCourses === false ? theme.tealSoft : theme.backgroundElement,
-                  },
-                ]}>
-                <ThemedText type="smallBold" themeColor={hasCourses === false ? 'teal' : 'textSecondary'}>
+                style={[styles.choicePill, hasCourses === false && styles.choicePillSelected]}>
+                <ThemedText type="smallBold" themeColor={hasCourses === false ? undefined : 'textSecondary'} style={hasCourses === false ? styles.choicePillTextSelected : undefined}>
                   No
                 </ThemedText>
               </Pressable>
-            </ThemedView>
+            </View>
 
             {hasCourses === true && (
-              <ThemedView style={[styles.inputWrap, { borderColor: theme.border }]}>
+              <View style={styles.inputWrap}>
                 <TextInput
                   placeholder="List the course name(s), separated by commas"
-                  placeholderTextColor={theme.textTertiary}
+                  placeholderTextColor={colors.textTertiary}
                   value={courses}
                   onChangeText={setCourses}
                   multiline
-                  style={[styles.input, { color: theme.text }]}
+                  style={styles.input}
                 />
-              </ThemedView>
+              </View>
             )}
-          </ThemedView>
+          </View>
         </ScrollView>
 
-        <ThemedView style={styles.footer}>
+        <View style={styles.footer}>
           <Pressable
-            style={[
-              styles.primaryBtn,
-              { backgroundColor: theme.teal },
-              !canContinue && styles.disabledBtn,
-            ]}
+            style={[styles.primaryBtn, !canContinue && styles.disabledBtn]}
             disabled={!canContinue}
             onPress={handleContinue}>
-            <ThemedText type="smallBold" style={{ color: theme.textOnAccent }}>Continue</ThemedText>
+            <ThemedText type="smallBold" style={styles.primaryBtnText}>Continue</ThemedText>
           </Pressable>
-        </ThemedView>
+        </View>
       </SafeAreaView>
     </ThemedView>
   );
@@ -112,26 +102,37 @@ const styles = StyleSheet.create({
   choiceRow: { flexDirection: 'row', gap: Spacing.two },
   choicePill: {
     flex: 1,
-    borderWidth: 1,
-    borderRadius: Spacing.three,
-    paddingVertical: Spacing.three,
+    backgroundColor: colors.backgroundElement,
+    borderWidth: 0.5,
+    borderColor: colors.border,
+    borderRadius: 16,
+    paddingVertical: 13,
     alignItems: 'center',
   },
+  choicePillSelected: {
+    borderColor: colors.tealDim,
+    backgroundColor: colors.tealDim,
+  },
+  choicePillTextSelected: { color: '#fff' },
   inputWrap: {
-    borderWidth: 1,
-    borderRadius: Spacing.three,
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.two,
+    backgroundColor: colors.backgroundElement,
+    borderWidth: 0.5,
+    borderColor: colors.border,
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     minHeight: 80,
   },
-  input: { fontSize: 14 },
+  input: { fontSize: 13, color: colors.text },
   footer: { width: '100%', alignItems: 'center', paddingVertical: Spacing.three },
   primaryBtn: {
     width: '100%',
     maxWidth: MaxFormWidth,
-    paddingVertical: Spacing.three,
-    borderRadius: Spacing.four,
+    backgroundColor: colors.teal,
+    paddingVertical: 13,
+    borderRadius: 16,
     alignItems: 'center',
   },
+  primaryBtnText: { color: '#fff' },
   disabledBtn: { opacity: 0.4 },
 });

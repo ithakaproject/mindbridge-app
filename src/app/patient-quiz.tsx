@@ -1,197 +1,163 @@
 import { router } from 'expo-router';
 import { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, TextInput } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { useTheme } from '@/hooks/use-theme';
-import { Spacing, MaxContentWidth, MaxFormWidth } from '@/constants/theme';
+import { Colors, Spacing, MaxContentWidth, MaxFormWidth } from '@/constants/theme';
+import { LANGUAGES, TIME_OF_DAY_OPTIONS, type SpecialtyScores } from '@/data/specialties';
 
-type ChoiceOption = { id: string; label: string };
+const colors = Colors.dark;
+
+type ChoiceOption = { id: string; label: string; weights?: SpecialtyScores };
 
 type Question =
-  | { id: string; type: 'choice'; text: string; options: ChoiceOption[] }
+  | { id: string; type: 'language'; text: string }
+  | { id: string; type: 'timeOfDay'; text: string }
+  | { id: string; type: 'choice'; text: string; multi?: boolean; options: ChoiceOption[] }
   | { id: string; type: 'text'; text: string; placeholder: string };
 
-const QUESTIONS: Record<string, Question> = {
-  q1: {
-    id: 'q1',
+const QUESTIONS: Question[] = [
+  {
+    id: 'languages',
+    type: 'language',
+    text: 'What language(s) are you comfortable speaking in session?',
+  },
+  {
+    id: 'timeOfDay',
+    type: 'timeOfDay',
+    text: 'What time of day generally works best for you?',
+  },
+  {
+    id: 'reason',
     type: 'choice',
-    text: 'What brings you here today?',
+    text: "What's mainly bringing you to therapy right now?",
     options: [
-      { id: 'anxiety', label: 'Anxiety or constant worry' },
-      { id: 'low', label: 'Feeling low, unmotivated, or down' },
-      { id: 'relationship', label: 'Relationship or family difficulties' },
-      { id: 'other', label: 'Something else' },
+      { id: 'anxiety', label: 'Ongoing anxiety, worry, or low mood', weights: { depression_anxiety: 3 } },
+      { id: 'relationship', label: 'A relationship, marriage, or family issue', weights: { family_relationships: 3 } },
+      { id: 'work', label: 'Stress from work or life balance', weights: { work_stress: 3 } },
+      { id: 'crisis', label: 'A specific crisis or difficult event', weights: { crisis_trauma: 3 } },
     ],
   },
-  q1b: {
-    id: 'q1b',
-    type: 'text',
-    text: "Tell us briefly what's going on",
-    placeholder: 'Share whatever feels relevant...',
-  },
-  q2: {
-    id: 'q2',
+  {
+    id: 'child',
     type: 'choice',
-    text: 'How long has this been going on?',
+    text: 'Is this mainly about supporting a child or teenager?',
     options: [
-      { id: 'building', label: "It's been building for a while" },
-      { id: 'recent', label: 'Something recent triggered it' },
-      { id: 'comes_goes', label: 'It comes and goes' },
-      { id: 'not_sure', label: 'Not sure — I just want someone to talk to' },
+      { id: 'yes', label: 'Yes, for my child or teen', weights: { children_adolescents: 3 } },
+      { id: 'no', label: 'No, this is about me', weights: {} },
     ],
   },
-  q3: {
-    id: 'q3',
+  {
+    id: 'addiction',
+    type: 'choice',
+    text: 'Do substance use or addictive behaviors play a role?',
+    options: [
+      { id: 'yes', label: 'Yes, significantly', weights: { addictions: 3 } },
+      { id: 'some', label: 'A little', weights: { addictions: 1 } },
+      { id: 'no', label: 'Not really', weights: {} },
+    ],
+  },
+  {
+    id: 'growth',
+    type: 'choice',
+    text: "Are you looking mainly for personal growth or self-understanding, rather than a specific issue?",
+    options: [
+      { id: 'yes', label: 'Yes, mainly personal growth', weights: { personal_growth: 3 } },
+      { id: 'some', label: 'Somewhat', weights: { personal_growth: 1 } },
+      { id: 'no', label: 'No, I have something specific in mind', weights: {} },
+    ],
+  },
+  {
+    id: 'other_concerns',
+    type: 'choice',
+    text: 'Does anything else here apply to you?',
+    options: [
+      { id: 'older', label: "I'm navigating an older-adult life transition", weights: { older_adults: 3 } },
+      { id: 'sexuality', label: 'Questions around sexuality or intimacy', weights: { sexuality: 3 } },
+      { id: 'legal', label: 'Legal, workplace, or institutional matters', weights: { legal_institutional: 3 } },
+      { id: 'sport', label: 'A sports injury or performance concern', weights: { sport_injury: 3 } },
+      { id: 'none', label: 'None of these', weights: {} },
+    ],
+  },
+  {
+    id: 'modality',
     type: 'choice',
     text: 'What kind of approach sounds most helpful to you?',
     options: [
-      { id: 'practical', label: 'Practical strategies and tools' },
-      { id: 'talk', label: 'Talking through feelings, digging deeper' },
-      { id: 'mindfulness', label: 'Mindfulness, calm, present-focused' },
-      { id: 'open', label: 'Not sure — open to whatever works' },
+      { id: 'structured', label: 'Structured, evidence-based tools (e.g. CBT-style)', weights: { clinical_psychology: 3 } },
+      { id: 'mindfulness', label: 'Mindfulness or body-centered', weights: { mindfulness_body: 3 } },
+      { id: 'coaching', label: 'Coaching, goal-oriented', weights: { organizational_coaching: 3 } },
+      { id: 'unsure', label: 'Not sure — open to whatever fits', weights: {} },
     ],
   },
-  q4: {
-    id: 'q4',
-    type: 'choice',
-    text: 'Have you been to therapy before?',
-    options: [
-      { id: 'helped', label: 'Yes, and it helped' },
-      { id: 'didnt_click', label: "Yes, but it didn't really click" },
-      { id: 'first_time', label: 'No, this is my first time' },
-      { id: 'on_off', label: 'On and off over the years' },
-    ],
+  {
+    id: 'notes',
+    type: 'text',
+    text: 'Anything else that would help us match you? (optional)',
+    placeholder: 'Share whatever feels relevant…',
   },
-  q4b: {
-    id: 'q4b',
-    type: 'choice',
-    text: "What didn't feel right about it?",
-    options: [
-      { id: 'not_heard', label: "Didn't feel heard" },
-      { id: 'approach', label: "Approach didn't fit" },
-      { id: 'personality', label: 'Personality mismatch' },
-      { id: 'other', label: 'Other' },
-    ],
-  },
-  q5: {
-    id: 'q5',
-    type: 'choice',
-    text: 'What matters most to you in a therapist?',
-    options: [
-      { id: 'warm', label: 'Feels warm and easy to open up to' },
-      { id: 'structured', label: 'Direct, structured, goal-oriented' },
-      { id: 'specialized', label: "Specializes in exactly what I'm dealing with" },
-      { id: 'available', label: 'Just someone with availability soon' },
-    ],
-  },
-  q6: {
-    id: 'q6',
-    type: 'choice',
-    text: 'What time of day works best for sessions?',
-    options: [
-      { id: 'morning', label: 'Mornings' },
-      { id: 'afternoon', label: 'Afternoons' },
-      { id: 'evening', label: 'Evenings' },
-      { id: 'flexible', label: 'Flexible / varies' },
-    ],
-  },
-  q7: {
-    id: 'q7',
-    type: 'choice',
-    text: "Anything you'd want your psychologist to be especially mindful of?",
-    options: [
-      { id: 'cultural', label: 'Cultural or religious background' },
-      { id: 'lgbtq', label: 'LGBTQ+ identity and experiences' },
-      { id: 'life_event', label: 'A specific life event (loss, divorce, career change, etc.)' },
-      { id: 'none', label: 'Nothing specific — just general support' },
-    ],
-  },
-  q8: {
-    id: 'q8',
-    type: 'choice',
-    text: 'What age range are you in?',
-    options: [
-      { id: '18_25', label: '18–25' },
-      { id: '26_45', label: '26–45' },
-      { id: '46_64', label: '46–64' },
-      { id: '65_plus', label: '65+' },
-    ],
-  },
-};
+];
 
-const START_QUESTION = 'q1';
-
-function getNextQuestionId(currentId: string, answers: Record<string, string>): string | null {
-  switch (currentId) {
-    case 'q1':
-      return answers.q1 === 'other' ? 'q1b' : 'q2';
-    case 'q1b':
-      return 'q2';
-    case 'q2':
-      return 'q3';
-    case 'q3':
-      return 'q4';
-    case 'q4':
-      return answers.q4 === 'didnt_click' ? 'q4b' : 'q5';
-    case 'q4b':
-      return 'q5';
-    case 'q5':
-      return 'q6';
-    case 'q6':
-      return 'q7';
-    case 'q7':
-      return 'q8';
-    case 'q8':
-      return null;
-    default:
-      return null;
+function mergeWeights(base: SpecialtyScores, addition: SpecialtyScores): SpecialtyScores {
+  const merged = { ...base };
+  for (const key of Object.keys(addition) as (keyof SpecialtyScores)[]) {
+    const newVal = addition[key] ?? 0;
+    merged[key] = Math.max(merged[key] ?? 0, newVal);
   }
+  return merged;
 }
 
 export default function PatientQuizScreen() {
-  const theme = useTheme();
-  const [history, setHistory] = useState<string[]>([START_QUESTION]);
-  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [stepIndex, setStepIndex] = useState(0);
+  const [languages, setLanguages] = useState<string[]>([]);
+  const [timeOfDay, setTimeOfDay] = useState<string | null>(null);
+  const [weights, setWeights] = useState<SpecialtyScores>({});
   const [textDraft, setTextDraft] = useState('');
 
-  const currentId = history[history.length - 1];
-  const question = QUESTIONS[currentId];
+  const question = QUESTIONS[stepIndex];
 
   function goBack() {
-    if (history.length > 1) {
-      setHistory((prev) => prev.slice(0, -1));
+    if (stepIndex > 0) {
+      setStepIndex((i) => i - 1);
     } else {
       router.back();
     }
   }
 
-  function advance(updatedAnswers: Record<string, string>) {
-    const nextId = getNextQuestionId(currentId, updatedAnswers);
-    if (nextId) {
-      setHistory((prev) => [...prev, nextId]);
+  function advance() {
+    if (stepIndex < QUESTIONS.length - 1) {
+      setStepIndex((i) => i + 1);
       setTextDraft('');
     } else {
-      // TODO: save `updatedAnswers` to Supabase once it's wired up,
-      // then eventually run the matching algorithm against psychologist profiles.
-      router.push('/patient-preferences');
+      router.push({
+        pathname: '/patient-preferences',
+        params: {
+          languages: JSON.stringify(languages),
+          timeOfDay: timeOfDay ?? 'flexible',
+          weights: JSON.stringify(weights),
+          notes: textDraft.trim(),
+        },
+      });
     }
   }
 
-  function selectOption(optionId: string) {
-    const updatedAnswers = { ...answers, [currentId]: optionId };
-    setAnswers(updatedAnswers);
-    advance(updatedAnswers);
+  function toggleLanguage(lang: string) {
+    setLanguages((prev) => (prev.includes(lang) ? prev.filter((l) => l !== lang) : [...prev, lang]));
   }
 
-  function submitText() {
-    const updatedAnswers = { ...answers, [currentId]: textDraft.trim() };
-    setAnswers(updatedAnswers);
-    advance(updatedAnswers);
+  function selectTimeOfDay(id: string) {
+    setTimeOfDay(id);
+    setStepIndex((i) => i + 1);
   }
 
-  const progress = Math.min(history.length / 10, 1);
+  function selectChoice(opt: ChoiceOption) {
+    if (opt.weights) setWeights((prev) => mergeWeights(prev, opt.weights!));
+    advance();
+  }
+
+  const progress = (stepIndex + 1) / QUESTIONS.length;
+  const canContinueLanguages = languages.length > 0;
 
   return (
     <ThemedView style={styles.container}>
@@ -200,50 +166,80 @@ export default function PatientQuizScreen() {
           <ThemedText type="smallBold" themeColor="teal">← Back</ThemedText>
         </Pressable>
 
-        <ThemedView style={[styles.progressTrack, { backgroundColor: theme.backgroundElement }]}>
-          <ThemedView style={[styles.progressFill, { backgroundColor: theme.teal, width: `${progress * 100}%` }]} />
-        </ThemedView>
+        <View style={styles.progressTrack}>
+          <View style={[styles.progressFill, { width: `${progress * 100}%` }]} />
+        </View>
 
         <ScrollView contentContainerStyle={styles.scrollContent}>
-          <ThemedView style={styles.card}>
+          <View style={styles.card}>
             <ThemedText type="subtitle">{question.text}</ThemedText>
 
-            {question.type === 'choice' ? (
-              <ThemedView style={styles.optionList}>
-                {question.options.map((opt) => (
-                  <Pressable
-                    key={opt.id}
-                    onPress={() => selectOption(opt.id)}
-                    style={[styles.optionCard, { borderColor: theme.border, backgroundColor: theme.backgroundElement }]}>
+            {question.type === 'language' && (
+              <>
+                <View style={styles.pillWrap}>
+                  {LANGUAGES.map((lang) => {
+                    const isSelected = languages.includes(lang);
+                    return (
+                      <Pressable
+                        key={lang}
+                        onPress={() => toggleLanguage(lang)}
+                        style={[styles.pill, isSelected && styles.pillSelected]}>
+                        <ThemedText type="small" themeColor={isSelected ? undefined : 'textSecondary'} style={isSelected ? styles.pillTextSelected : undefined}>
+                          {lang}
+                        </ThemedText>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+                <Pressable
+                  style={[styles.primaryBtn, !canContinueLanguages && styles.disabledBtn]}
+                  disabled={!canContinueLanguages}
+                  onPress={advance}>
+                  <ThemedText type="smallBold" style={styles.primaryBtnText}>Continue</ThemedText>
+                </Pressable>
+              </>
+            )}
+
+            {question.type === 'timeOfDay' && (
+              <View style={styles.optionList}>
+                {TIME_OF_DAY_OPTIONS.map((opt) => (
+                  <Pressable key={opt.id} onPress={() => selectTimeOfDay(opt.id)} style={styles.optionCard}>
                     <ThemedText type="default">{opt.label}</ThemedText>
                   </Pressable>
                 ))}
-              </ThemedView>
-            ) : (
-              <ThemedView style={styles.textBlock}>
-                <ThemedView style={[styles.inputWrap, { borderColor: theme.border }]}>
+              </View>
+            )}
+
+            {question.type === 'choice' && (
+              <View style={styles.optionList}>
+                {question.options.map((opt) => (
+                  <Pressable key={opt.id} onPress={() => selectChoice(opt)} style={styles.optionCard}>
+                    <ThemedText type="default">{opt.label}</ThemedText>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+
+            {question.type === 'text' && (
+              <View style={styles.textBlock}>
+                <View style={styles.inputWrap}>
                   <TextInput
                     placeholder={question.placeholder}
-                    placeholderTextColor={theme.textTertiary}
+                    placeholderTextColor={colors.textTertiary}
                     value={textDraft}
                     onChangeText={setTextDraft}
                     multiline
-                    style={[styles.input, { color: theme.text }]}
+                    style={styles.input}
                   />
-                </ThemedView>
-                <Pressable
-                  style={[
-                    styles.primaryBtn,
-                    { backgroundColor: theme.teal },
-                    textDraft.trim() === '' && styles.disabledBtn,
-                  ]}
-                  disabled={textDraft.trim() === ''}
-                  onPress={submitText}>
-                  <ThemedText type="smallBold" style={{ color: theme.textOnAccent }}>Continue</ThemedText>
+                </View>
+                <Pressable style={styles.primaryBtn} onPress={advance}>
+                  <ThemedText type="smallBold" style={styles.primaryBtnText}>
+                    {textDraft.trim() === '' ? 'Skip' : 'Continue'}
+                  </ThemedText>
                 </Pressable>
-              </ThemedView>
+              </View>
             )}
-          </ThemedView>
+          </View>
         </ScrollView>
       </SafeAreaView>
     </ThemedView>
@@ -262,37 +258,59 @@ const styles = StyleSheet.create({
   },
   progressTrack: {
     height: 6,
-    borderRadius: Spacing.one,
+    borderRadius: 3,
     overflow: 'hidden',
     alignSelf: 'center',
     width: '100%',
     maxWidth: MaxFormWidth,
+    backgroundColor: colors.backgroundElement,
   },
   progressFill: {
     height: '100%',
-    borderRadius: Spacing.one,
+    borderRadius: 3,
+    backgroundColor: colors.teal,
   },
   scrollContent: { flexGrow: 1, alignItems: 'center', paddingVertical: Spacing.four },
   card: { width: '100%', maxWidth: MaxFormWidth, gap: Spacing.four },
   optionList: { gap: Spacing.two },
   optionCard: {
-    borderWidth: 1,
-    borderRadius: Spacing.three,
-    padding: Spacing.three,
+    backgroundColor: colors.backgroundElement,
+    borderWidth: 0.5,
+    borderColor: colors.border,
+    borderRadius: 16,
+    padding: 14,
   },
+  pillWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  pill: {
+    borderWidth: 0.5,
+    borderColor: colors.border,
+    backgroundColor: colors.backgroundElement,
+    borderRadius: 20,
+    paddingVertical: 6,
+    paddingHorizontal: 13,
+  },
+  pillSelected: {
+    borderColor: colors.tealDim,
+    backgroundColor: colors.tealDim,
+  },
+  pillTextSelected: { color: '#fff', fontWeight: '600' },
   textBlock: { gap: Spacing.three },
   inputWrap: {
-    borderWidth: 1,
-    borderRadius: Spacing.three,
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.two,
+    backgroundColor: colors.backgroundElement,
+    borderWidth: 0.5,
+    borderColor: colors.border,
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     minHeight: 100,
   },
-  input: { fontSize: 14 },
+  input: { fontSize: 13, color: colors.text },
   primaryBtn: {
-    paddingVertical: Spacing.three,
-    borderRadius: Spacing.four,
+    backgroundColor: colors.teal,
+    paddingVertical: 13,
+    borderRadius: 16,
     alignItems: 'center',
   },
+  primaryBtnText: { color: '#fff' },
   disabledBtn: { opacity: 0.4 },
 });

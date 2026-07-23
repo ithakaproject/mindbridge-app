@@ -50,17 +50,19 @@ export default function PatientProfileScreen() {
   async function loadData() {
     setLoading(true);
 
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { session } } = await supabase.auth.getSession();
+    const user = session?.user;
     if (!user) {
       setLoading(false);
       return;
     }
 
-    const { data: baseProfile } = await supabase
+    const { data: baseProfile, error: baseProfileError } = await supabase
       .from('profiles')
       .select('full_name')
       .eq('id', user.id)
       .single();
+    if (baseProfileError) console.warn('BASE PROFILE ERROR:', baseProfileError.message);
 
     const { count: sessionCount } = await supabase
       .from('sessions')
@@ -79,24 +81,30 @@ export default function PatientProfileScreen() {
       entry_count: entryCount ?? 0,
     });
 
-    const { data: patientProfile } = await supabase
+    // maybeSingle (not single) so a missing row returns null cleanly
+    // instead of throwing — and we log the real error if one occurs,
+    // instead of silently falling through to "not matched".
+    const { data: patientProfile, error: patientProfileError } = await supabase
       .from('patient_profiles')
       .select('psychologist_id, created_at')
       .eq('id', user.id)
-      .single();
+      .maybeSingle();
+    if (patientProfileError) console.warn('PATIENT PROFILE ERROR:', patientProfileError.message);
 
     if (patientProfile?.psychologist_id) {
-      const { data: psychProfile } = await supabase
+      const { data: psychProfile, error: psychProfileError } = await supabase
         .from('profiles')
         .select('full_name')
         .eq('id', patientProfile.psychologist_id)
-        .single();
+        .maybeSingle();
+      if (psychProfileError) console.warn('PSYCH PROFILE ERROR:', psychProfileError.message);
 
-      const { data: psychDetails } = await supabase
+      const { data: psychDetails, error: psychDetailsError } = await supabase
         .from('psychologist_profiles')
         .select('specialties')
         .eq('id', patientProfile.psychologist_id)
-        .single();
+        .maybeSingle();
+      if (psychDetailsError) console.warn('PSYCH DETAILS ERROR:', psychDetailsError.message);
 
       setPsychologist({
         id: patientProfile.psychologist_id,
@@ -126,12 +134,13 @@ export default function PatientProfileScreen() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
 
-    await supabase.from('rematch_requests').insert({
+    const { error } = await supabase.from('rematch_requests').insert({
       patient_id: user.id,
       reason,
       details,
       status: 'pending',
     });
+    if (error) console.warn('REMATCH REQUEST ERROR:', error.message);
   }
 
   if (loading) {

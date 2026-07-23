@@ -1,15 +1,24 @@
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, TextInput } from 'react-native';
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { useTheme } from '@/hooks/use-theme';
-import { Spacing, MaxContentWidth, MaxFormWidth } from '@/constants/theme';
+import { Colors, Spacing, MaxContentWidth, MaxFormWidth } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
+import { findTopMatches, type PsychCandidate } from '@/lib/matching';
+import type { TimeOfDayId } from '@/data/specialties';
+
+const colors = Colors.dark;
 
 export default function PatientAccountScreen() {
-  const theme = useTheme();
+  const params = useLocalSearchParams<{
+    languages?: string;
+    timeOfDay?: string;
+    weights?: string;
+    notes?: string;
+  }>();
+
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -27,8 +36,6 @@ export default function PatientAccountScreen() {
     setError('');
     setLoading(true);
 
-    // 1. Create the auth user — full_name and role passed in metadata
-    // so the trigger inserts them into profiles automatically.
     const { data, error: signUpError } = await supabase.auth.signUp({
       email: email.trim(),
       password,
@@ -53,15 +60,72 @@ export default function PatientAccountScreen() {
       return;
     }
 
-    // 2. Create the patient_profiles row
+    let patientLanguages: string[] = [];
+    let patientWeights: Record<string, number> = {};
+    const timeOfDay = (params.timeOfDay as TimeOfDayId) ?? 'flexible';
+    const notes = params.notes ?? '';
+
+    try {
+      if (params.languages) patientLanguages = JSON.parse(params.languages);
+      if (params.weights) patientWeights = JSON.parse(params.weights);
+    } catch {
+      console.warn('Could not parse quiz answers, proceeding without them');
+    }
+
     const { error: patientError } = await supabase
       .from('patient_profiles')
-      .insert({ id: userId });
+      .insert({
+        id: userId,
+        languages: patientLanguages,
+        quiz_answers: { weights: patientWeights, timeOfDay },
+        preference_notes: notes || null,
+      });
 
     if (patientError) {
       setError('Account created but patient profile failed. Please contact support.');
       setLoading(false);
       return;
+    }
+
+    try {
+      const { data: psychProfiles, error: psychFetchError } = await supabase
+        .from('psychologist_profiles')
+        .select('id, specialty_scores, languages')
+        .eq('status', 'approved');
+      if (psychFetchError) console.warn('PSYCH FETCH ERROR:', psychFetchError.message);
+
+      const candidateIds = (psychProfiles ?? []).map((p) => p.id);
+
+      const { data: availData, error: availError } = await supabase
+        .from('availability')
+        .select('psychologist_id, day_of_week, start_time, end_time')
+        .in('psychologist_id', candidateIds.length > 0 ? candidateIds : ['00000000-0000-0000-0000-000000000000']);
+      if (availError) console.warn('AVAILABILITY FETCH ERROR:', availError.message);
+
+      const candidates: PsychCandidate[] = (psychProfiles ?? []).map((p) => ({
+        id: p.id,
+        specialty_scores: p.specialty_scores,
+        languages: p.languages,
+        availability: (availData ?? []).filter((a) => a.psychologist_id === p.id),
+      }));
+
+      const ranked = findTopMatches(patientWeights, patientLanguages, timeOfDay, candidates);
+
+      if (ranked.length > 0) {
+        const [top, ...rest] = ranked;
+        const alternates = rest.slice(0, 2).map((r) => r.id);
+
+        const { error: matchError } = await supabase
+          .from('patient_profiles')
+          .update({
+            psychologist_id: top.id,
+            match_alternates: alternates,
+          })
+          .eq('id', userId);
+        if (matchError) console.warn('MATCH ASSIGNMENT ERROR:', matchError.message);
+      }
+    } catch (matchingErr) {
+      console.warn('Matching failed, patient can be matched manually later:', matchingErr);
     }
 
     setLoading(false);
@@ -79,49 +143,49 @@ export default function PatientAccountScreen() {
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           style={styles.formWrap}>
           <ScrollView contentContainerStyle={styles.scrollContent}>
-            <ThemedView style={styles.card}>
+            <View style={styles.card}>
               <ThemedText type="title">Create your account</ThemedText>
               <ThemedText type="default" themeColor="textSecondary" style={styles.subtitle}>
-                We'll use your answers to find your best psychologist matches.
+                We'll use your answers to find your best psychologist match.
               </ThemedText>
 
-              <ThemedView style={[styles.inputWrap, { borderColor: theme.border }]}>
+              <View style={styles.inputWrap}>
                 <TextInput
                   placeholder="Full name"
-                  placeholderTextColor={theme.textTertiary}
+                  placeholderTextColor={colors.textTertiary}
                   value={fullName}
                   onChangeText={setFullName}
-                  style={[styles.input, { color: theme.text }]}
+                  style={styles.input}
                 />
-              </ThemedView>
+              </View>
 
-              <ThemedView style={[styles.inputWrap, { borderColor: theme.border }]}>
+              <View style={styles.inputWrap}>
                 <TextInput
                   placeholder="Email"
-                  placeholderTextColor={theme.textTertiary}
+                  placeholderTextColor={colors.textTertiary}
                   value={email}
                   onChangeText={setEmail}
                   autoCapitalize="none"
                   keyboardType="email-address"
-                  style={[styles.input, { color: theme.text }]}
+                  style={styles.input}
                 />
-              </ThemedView>
+              </View>
 
-              <ThemedView style={[styles.inputWrap, { borderColor: theme.border }]}>
+              <View style={styles.inputWrap}>
                 <TextInput
                   placeholder="Password"
-                  placeholderTextColor={theme.textTertiary}
+                  placeholderTextColor={colors.textTertiary}
                   value={password}
                   onChangeText={setPassword}
                   secureTextEntry={!showPassword}
-                  style={[styles.input, { color: theme.text, flex: 1 }]}
+                  style={[styles.input, { flex: 1 }]}
                 />
                 <Pressable onPress={() => setShowPassword((v) => !v)}>
                   <ThemedText type="small" themeColor="teal">
                     {showPassword ? 'Hide' : 'Show'}
                   </ThemedText>
                 </Pressable>
-              </ThemedView>
+              </View>
 
               {error !== '' && (
                 <ThemedText type="small" themeColor="error">
@@ -130,17 +194,14 @@ export default function PatientAccountScreen() {
               )}
 
               <Pressable
-                style={[
-                  styles.primaryBtn,
-                  { backgroundColor: canSubmit ? theme.teal : theme.border },
-                ]}
+                style={[styles.primaryBtn, !canSubmit && styles.disabledBtn]}
                 disabled={!canSubmit}
                 onPress={handleSubmit}>
-                <ThemedText type="smallBold" style={{ color: theme.textOnAccent }}>
+                <ThemedText type="smallBold" style={styles.primaryBtnText}>
                   {loading ? 'Creating account…' : 'Create account'}
                 </ThemedText>
               </Pressable>
-            </ThemedView>
+            </View>
           </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>
@@ -169,16 +230,21 @@ const styles = StyleSheet.create({
   inputWrap: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderWidth: 1,
-    borderRadius: Spacing.three,
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.two,
+    backgroundColor: colors.backgroundElement,
+    borderWidth: 0.5,
+    borderColor: colors.border,
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
   },
-  input: { fontSize: 14, flex: 1 },
+  input: { fontSize: 13, flex: 1, color: colors.text },
   primaryBtn: {
-    paddingVertical: Spacing.three,
-    borderRadius: Spacing.four,
+    backgroundColor: colors.teal,
+    paddingVertical: 13,
+    borderRadius: 16,
     alignItems: 'center',
     marginTop: Spacing.two,
   },
+  primaryBtnText: { color: '#fff' },
+  disabledBtn: { opacity: 0.4 },
 });

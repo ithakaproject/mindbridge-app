@@ -1,11 +1,12 @@
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Switch } from 'react-native';
+import { Modal, Pressable, ScrollView, StyleSheet, Switch, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { useTheme } from '@/hooks/use-theme';
-import { Spacing, MaxContentWidth, MaxFormWidth } from '@/constants/theme';
+import { Colors, Spacing, MaxContentWidth, MaxFormWidth } from '@/constants/theme';
+
+const colors = Colors.dark;
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -27,7 +28,7 @@ type DaySchedule = { enabled: boolean; start: string; end: string };
 type ActivePicker = { day: string; field: 'start' | 'end' } | null;
 
 export default function PsychHoursScreen() {
-  const theme = useTheme();
+  const params = useLocalSearchParams<{ languages?: string; specialtyScores?: string }>();
   const [schedule, setSchedule] = useState<Record<string, DaySchedule>>(
     DAYS.reduce(
       (acc, day) => ({ ...acc, [day]: { enabled: false, start: '9:00 AM', end: '5:00 PM' } }),
@@ -46,11 +47,13 @@ export default function PsychHoursScreen() {
   }
 
   function handleContinue() {
-    // Pass the schedule as a JSON string to psych-account,
-    // where it will be saved to Supabase after the user is created.
     router.push({
       pathname: '/psych-account',
-      params: { schedule: JSON.stringify(schedule) },
+      params: {
+        schedule: JSON.stringify(schedule),
+        languages: params.languages ?? '[]',
+        specialtyScores: params.specialtyScores ?? '{}',
+      },
     });
   }
 
@@ -62,7 +65,7 @@ export default function PsychHoursScreen() {
         </Pressable>
 
         <ScrollView contentContainerStyle={styles.scrollContent}>
-          <ThemedView style={styles.card}>
+          <View style={styles.card}>
             <ThemedText type="title">Set your hours</ThemedText>
             <ThemedText type="default" themeColor="textSecondary" style={styles.subtitle}>
               Set your usual weekly availability. You'll be able to adjust these anytime from your calendar.
@@ -71,49 +74,45 @@ export default function PsychHoursScreen() {
             {DAYS.map((day) => {
               const daySchedule = schedule[day];
               return (
-                <ThemedView key={day} type="backgroundElement" style={[styles.dayCard, { borderColor: theme.border }]}>
-                  <ThemedView style={styles.dayHeader}>
+                <ThemedView key={day} type="backgroundElement" style={styles.dayCard}>
+                  <View style={styles.dayHeader}>
                     <ThemedText type="smallBold">{day}</ThemedText>
                     <Switch
                       value={daySchedule.enabled}
                       onValueChange={() => toggleDay(day)}
-                      trackColor={{ false: theme.border, true: theme.teal }}
-                      thumbColor={theme.textOnAccent}
+                      trackColor={{ false: colors.border, true: colors.teal }}
+                      thumbColor={colors.textOnAccent}
                     />
-                  </ThemedView>
+                  </View>
 
                   {daySchedule.enabled && (
-                    <ThemedView style={styles.timeRow}>
-                      <Pressable
-                        style={[styles.timePill, { borderColor: theme.border }]}
-                        onPress={() => setActivePicker({ day, field: 'start' })}>
+                    <View style={styles.timeRow}>
+                      <Pressable style={styles.timePill} onPress={() => setActivePicker({ day, field: 'start' })}>
                         <ThemedText type="small" themeColor="textSecondary">Start</ThemedText>
                         <ThemedText type="smallBold">{daySchedule.start}</ThemedText>
                       </Pressable>
                       <ThemedText type="small" themeColor="textSecondary">to</ThemedText>
-                      <Pressable
-                        style={[styles.timePill, { borderColor: theme.border }]}
-                        onPress={() => setActivePicker({ day, field: 'end' })}>
+                      <Pressable style={styles.timePill} onPress={() => setActivePicker({ day, field: 'end' })}>
                         <ThemedText type="small" themeColor="textSecondary">End</ThemedText>
                         <ThemedText type="smallBold">{daySchedule.end}</ThemedText>
                       </Pressable>
-                    </ThemedView>
+                    </View>
                   )}
                 </ThemedView>
               );
             })}
-          </ThemedView>
+          </View>
         </ScrollView>
 
-        <ThemedView style={styles.footer}>
-          <Pressable style={[styles.primaryBtn, { backgroundColor: theme.teal }]} onPress={handleContinue}>
-            <ThemedText type="smallBold" style={{ color: theme.textOnAccent }}>Continue</ThemedText>
+        <View style={styles.footer}>
+          <Pressable style={styles.primaryBtn} onPress={handleContinue}>
+            <ThemedText type="smallBold" style={styles.primaryBtnText}>Continue</ThemedText>
           </Pressable>
-        </ThemedView>
+        </View>
       </SafeAreaView>
 
       <Modal visible={activePicker !== null} transparent animationType="fade" onRequestClose={() => setActivePicker(null)}>
-        <Pressable style={[styles.modalOverlay, { backgroundColor: theme.overlay }]} onPress={() => setActivePicker(null)}>
+        <Pressable style={styles.modalOverlay} onPress={() => setActivePicker(null)}>
           <ThemedView type="backgroundElement" style={styles.modalSheet}>
             <ThemedText type="smallBold" style={styles.modalTitle}>
               {activePicker?.field === 'start' ? 'Select start time' : 'Select end time'}
@@ -148,39 +147,44 @@ const styles = StyleSheet.create({
   card: { width: '100%', maxWidth: MaxFormWidth, gap: Spacing.three },
   subtitle: { marginBottom: Spacing.two },
   dayCard: {
-    borderWidth: 1,
-    borderRadius: Spacing.three,
-    padding: Spacing.three,
+    borderWidth: 0.5,
+    borderColor: colors.border,
+    borderRadius: 16,
+    padding: 14,
     gap: Spacing.two,
   },
   dayHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   timeRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   timePill: {
     flex: 1,
-    borderWidth: 1,
-    borderRadius: Spacing.two,
-    paddingHorizontal: Spacing.two,
-    paddingVertical: Spacing.two,
+    borderWidth: 0.5,
+    borderColor: colors.border,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     gap: 2,
   },
   footer: { width: '100%', alignItems: 'center', paddingVertical: Spacing.three },
   primaryBtn: {
     width: '100%',
     maxWidth: MaxFormWidth,
-    paddingVertical: Spacing.three,
-    borderRadius: Spacing.four,
+    backgroundColor: colors.teal,
+    paddingVertical: 13,
+    borderRadius: 16,
     alignItems: 'center',
   },
+  primaryBtnText: { color: '#fff' },
   modalOverlay: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: colors.overlay,
   },
   modalSheet: {
     width: '85%',
     maxWidth: 320,
     maxHeight: 400,
-    borderRadius: Spacing.four,
+    borderRadius: 18,
     padding: Spacing.four,
     gap: Spacing.three,
   },
